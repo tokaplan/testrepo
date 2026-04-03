@@ -13,11 +13,7 @@ using OpenTelemetry.Trace;
 
 const string endpoint = "https://alkap-mc9jji6o-eastus2.cognitiveservices.azure.com";
 const string deploymentName = "my-chat-deployment-1";
-const string appInsightsConnectionString =
-    "InstrumentationKey=cfbc4eae-b34d-47e1-91b8-6bb19d315373;" +
-    "IngestionEndpoint=https://eastus-8.in.applicationinsights.azure.com/;" +
-    "LiveEndpoint=https://eastus.livediagnostics.monitor.azure.com/;" +
-    "ApplicationId=9ebafd11-a230-44bb-bc57-4cdcc42646a8";
+const string appInsightsConnectionString = "InstrumentationKey=978264a8-7be3-47ac-8c4e-fe3e62866da2;IngestionEndpoint=https://centraluseuap-0.in.applicationinsights.azure.com/;LiveEndpoint=https://centraluseuap.livediagnostics.monitor.azure.com/;ApplicationId=aec2eac5-dab8-400c-9fec-de7d03a0eec2";
 
 // Opt in to the experimental OpenAI/Azure.AI.OpenAI telemetry
 AppContext.SetSwitch("OpenAI.Experimental.EnableOpenTelemetry", true);

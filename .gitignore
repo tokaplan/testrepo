@@ -20,3 +20,6 @@ packages/
 ## OS files
 Thumbs.db
 .DS_Store
+/.vs
+/WeatherChat/publish-10.zip
+/WeatherChat/publish-11.zip
