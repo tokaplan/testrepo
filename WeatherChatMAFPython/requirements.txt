@@ -1,0 +1,6 @@
+agent-framework
+agent-framework-openai
+azure-monitor-opentelemetry-exporter
+opentelemetry-sdk
+opentelemetry-instrumentation-openai-v2
+opentelemetry-instrumentation-requests

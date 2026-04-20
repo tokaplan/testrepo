@@ -1,28 +1,36 @@
-﻿using System.ClientModel;
+using System.ClientModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Text.Json;
 using Azure.Core;
 using Azure.Core.Pipeline;
 using Azure.Monitor.OpenTelemetry.Exporter;
-using Microsoft.SemanticKernel;
-using Microsoft.SemanticKernel.Agents;
-using Microsoft.SemanticKernel.ChatCompletion;
+using Microsoft.Agents.AI;
+using Microsoft.Extensions.AI;
+using Azure.AI.OpenAI;
+using OpenAI;
+using OpenAI.Chat;
+using OpenAI.Responses;
 using OpenTelemetry;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 
+#pragma warning disable OPENAI001 // ResponsesClient is experimental
+
 // ---------------------------------------------------------------------------
-// WeatherChat - a console app that uses a Semantic Kernel ChatCompletionAgent
-// with tool calling to answer weather questions, with OTEL telemetry
-// (including agent spans) exported to Application Insights.
+// WeatherChatMAF - a console app that uses a Microsoft Agent Framework (MAF)
+// ChatClientAgent with tool calling to answer weather questions, with OTEL
+// telemetry (including agent spans) exported to Application Insights.
 // ---------------------------------------------------------------------------
 
 const string endpoint = "https://alkap-mc9jji6o-eastus2.services.ai.azure.com/api/projects/alkap-mc9jji6o-eastus2_project";
-string[] deploymentNames = ["deployment-gpt-5.4-mini", "deployment-Phi-4", "deployment-DeepSeek-R1", "deployment-Llama-3.3-70B-Instruct"];
-string deploymentName = deploymentNames[0];
+const string azureOpenAIEndpoint = "https://alkap-mc9jji6o-eastus2.cognitiveservices.azure.com";
+string[] deploymentNames = ["deployment-gpt-5.4-mini", "deployment-gpt-4o", "deployment-gpt-4o-mini", "deployment-o4-mini", "deployment-Phi-4", "deployment-DeepSeek-R1", "deployment-Llama-3.3-70B-Instruct"];
+HashSet<string> noToolDeployments = ["deployment-Phi-4", "deployment-DeepSeek-R1"];
+string runId = args.Length > 0 ? args[0] : Guid.NewGuid().ToString();
 
+bool fakeMode = false;
 bool useGlobal = false;
 
 //const string appInsightsConnectionString = "InstrumentationKey=978264a8-7be3-47ac-8c4e-fe3e62866da2;IngestionEndpoint=https://centraluseuap-0.in.applicationinsights.azure.com/;LiveEndpoint=https://centraluseuap.livediagnostics.monitor.azure.com/;ApplicationId=aec2eac5-dab8-400c-9fec-de7d03a0eec2"; //genai-roi-test-11
@@ -44,31 +52,40 @@ if (useGlobal)
     appInsightsConnectionString = string.Join(";", strippedParts);
 }
 
-// Opt in to experimental OpenTelemetry for both OpenAI SDK and Semantic Kernel
-AppContext.SetSwitch("OpenAI.Expersimental.EnableOpenTelemetry", true);
-AppContext.SetSwitch("Microsoft.SemanticKernel.Experimental.GenAI.EnableOTelDiagnostics", true);
+// Opt in to experimental OpenTelemetry for the OpenAI SDK
+AppContext.SetSwitch("OpenAI.Experimental.EnableOpenTelemetry", true);
 
 // ----- Configure OpenTelemetry tracing & metrics ---------------------------
 const string FakeGenAISourceName = "FakeGenAI";
+const string GenAISourceName = "WeatherChatMAF.GenAI";
 ActivitySource fakeGenAISource = new(FakeGenAISourceName);
 
+// Increase batch processor queue to avoid dropping spans during parallel execution
+Environment.SetEnvironmentVariable("OTEL_BSP_MAX_QUEUE_SIZE", "10000");
+Environment.SetEnvironmentVariable("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", "1000");
+Environment.SetEnvironmentVariable("OTEL_BSP_SCHEDULE_DELAY", "1000");
+
 using var tracerProvider = Sdk.CreateTracerProviderBuilder()
-    .ConfigureResource(r => r.AddService("WeatherChat"))
-    .AddProcessor(new TestAgentProcessor("WeatherChat"))
+    .ConfigureResource(r => r.AddService("WeatherChatMAF"))
+    .AddProcessor(new TestAgentProcessor("WeatherChatMAF", runId))
     .AddSource("OpenAI.*")
-    .AddSource("Microsoft.SemanticKernel*")
+    .AddSource("Microsoft.Agents.*")
+    .AddSource("Experimental.Microsoft.Agents.AI")
+    .AddSource("Microsoft.Extensions.AI.*")
     .AddSource(FakeGenAISourceName)
+    .AddSource(GenAISourceName)
     .AddHttpClientInstrumentation()
     .AddAzureMonitorTraceExporter(o =>
     {
         o.ConnectionString = appInsightsConnectionString;
-        o.AddPolicy(new CustomHeaderPolicy(), HttpPipelinePosition.PerCall);
+        o.SamplingRatio = 1.0f;
     })
     .Build();
 
 using var meterProvider = Sdk.CreateMeterProviderBuilder()
     .AddMeter("OpenAI.*")
-    .AddMeter("Microsoft.SemanticKernel*")
+    .AddMeter("Microsoft.Agents.*")
+    .AddMeter("Microsoft.Extensions.AI.*")
     .AddRuntimeInstrumentation()
     .AddHttpClientInstrumentation()
     .AddAzureMonitorMetricExporter(o =>
@@ -82,8 +99,7 @@ using var meterProvider = Sdk.CreateMeterProviderBuilder()
 Console.WriteLine("Enter your Azure OpenAI API key: ");
 Console.WriteLine($@"AppInsights: {appInsightsConnectionString}");
 
-bool fakeMode = false;
-if(fakeMode)
+if (fakeMode)
 {
     // Emit a fake GenAI dependency with all attributes Breeze's GenAICostEnrichment needs
     EmitFakeGenAIDependency(fakeGenAISource);
@@ -102,21 +118,58 @@ if (string.IsNullOrWhiteSpace(apiKey))
     return 1;
 }
 
-// ----- Build kernel with Azure OpenAI and weather plugin -------------------
-var builder = Kernel.CreateBuilder();
-builder.AddAzureOpenAIChatCompletion(deploymentName, endpoint, apiKey);
-builder.Plugins.AddFromType<WeatherPlugin>();
+// ----- Build one MAF agent per deployment, sharing the same client ---
+var baseUrl = endpoint + "/openai/v1/";
+var openAIClient = new OpenAIClient(
+    new ApiKeyCredential(apiKey),
+    new OpenAIClientOptions { Endpoint = new Uri(baseUrl) });
+var azureClient = new AzureOpenAIClient(
+    new Uri(azureOpenAIEndpoint),
+    new ApiKeyCredential(apiKey));
+var tools = new List<AITool> { AIFunctionFactory.Create(WeatherPlugin.GetCurrentWeather) };
 
-Kernel kernel = builder.Build();
+var agents = new List<(string label, AIAgent agent)>();
+HashSet<string> responsesApiDeployments = ["deployment-gpt-5.4-mini", "deployment-gpt-4o", "deployment-gpt-4o-mini", "deployment-o4-mini"];
 
-// ----- Create the agent ----------------------------------------------------
-ChatCompletionAgent agent = new()
+foreach (var deployment in deploymentNames)
 {
-    Name = "WeatherAgent",
-    Description = "A helpful weather assistant that can look up current weather.",
-    Instructions = "You are a helpful weather assistant. Use the get_current_weather tool to look up weather information when asked.",
-    Kernel = kernel
-};
+    bool useTools = !noToolDeployments.Contains(deployment);
+    string instructions = useTools
+        ? "You are a helpful weather assistant. Use the get_current_weather tool to look up weather information when asked."
+        : "You are a helpful weather assistant. Answer weather questions using your knowledge. You do not have access to tools.";
+
+    if (responsesApiDeployments.Contains(deployment))
+    {
+        // Responses API agent
+        var respClient = openAIClient.GetResponsesClient()
+            .AsIChatClient(defaultModelId: deployment)
+            .AsBuilder().UseOpenTelemetry(sourceName: GenAISourceName).Build();
+        AIAgent respAgent = new ChatClientAgent(respClient,
+            instructions: instructions, name: $"WeatherAgent-{deployment}-responses",
+            description: "Weather assistant", tools: tools);
+        agents.Add(($"{deployment} [responses]", new OpenTelemetryAgent(respAgent)));
+
+        // Chat Completions API agent for the same model
+        var ccClient = azureClient.GetChatClient(deployment)
+            .AsIChatClient()
+            .AsBuilder().UseOpenTelemetry(sourceName: GenAISourceName).Build();
+        AIAgent ccAgent = new ChatClientAgent(ccClient,
+            instructions: instructions, name: $"WeatherAgent-{deployment}-completions",
+            description: "Weather assistant", tools: tools);
+        agents.Add(($"{deployment} [completions]", new OpenTelemetryAgent(ccAgent)));
+    }
+    else
+    {
+        // Chat Completions only
+        var ccClient = azureClient.GetChatClient(deployment)
+            .AsIChatClient()
+            .AsBuilder().UseOpenTelemetry(sourceName: GenAISourceName).Build();
+        AIAgent ccAgent = new ChatClientAgent(ccClient,
+            instructions: instructions, name: $"WeatherAgent-{deployment}",
+            description: "Weather assistant", tools: useTools ? tools : null);
+        agents.Add(($"{deployment} [completions]", new OpenTelemetryAgent(ccAgent)));
+    }
+}
 
 string userPrompt = "What's the weather like in Seattle and San Francisco?";
 
@@ -124,29 +177,46 @@ Console.WriteLine();
 Console.WriteLine($"You: {userPrompt}");
 Console.WriteLine();
 
-// ----- Invoke the agent (SK handles the tool-calling loop) -----------------
-try
+// ----- Invoke all agents sequentially to avoid batch export race conditions ---
+var results = new List<(string deployment, AgentResponse? response, Exception? error)>();
+foreach (var (deployment, agent) in agents)
 {
-    ChatHistoryAgentThread thread = new();
-
-    await foreach (AgentResponseItem<ChatMessageContent> response in agent.InvokeAsync(
-        new ChatMessageContent(AuthorRole.User, userPrompt), thread))
+    try
     {
-        if (response.Message.Role == AuthorRole.Assistant && !string.IsNullOrWhiteSpace(response.Message.Content))
-        {
-            Console.WriteLine($"Assistant: {response.Message.Content}");
-        }
+        AgentResponse response = await agent.RunAsync(userPrompt);
+        results.Add((deployment, response, null));
+    }
+    catch (Exception ex)
+    {
+        results.Add((deployment, null, ex));
     }
 }
-catch (ClientResultException ex)
+
+foreach (var (deployment, response, error) in results)
 {
-    Console.Error.WriteLine($"API error: {ex.Message}");
-    return 1;
+    Console.WriteLine($"--- [{deployment}] ---");
+    if (error is not null)
+    {
+        Console.Error.WriteLine($"  Error: {error.Message}");
+        continue;
+    }
+
+    Console.WriteLine($"  Messages: {response!.Messages.Count}");
+    foreach (var message in response!.Messages)
+    {
+        if (message.Role == ChatRole.Assistant && !string.IsNullOrWhiteSpace(message.Text))
+        {
+            Console.WriteLine($"  Assistant: {message.Text}");
+        }
+    }
+
+    Console.WriteLine();
 }
 
-// Flush telemetry before exit
-tracerProvider?.ForceFlush();
-meterProvider?.ForceFlush();
+// Flush telemetry before exit — wait briefly to let all spans complete
+Thread.Sleep(2000);
+tracerProvider?.ForceFlush(30000);
+meterProvider?.ForceFlush(30000);
 
 Console.WriteLine();
 Console.WriteLine("Telemetry flushed to Application Insights.");
@@ -157,7 +227,7 @@ return 0;
 // GenAICostEnrichment.cs reads for cost calculation.
 //
 // The enrichment requires:
-//   1. The item is a dependency (Client/Internal span → RemoteDependencyData)
+//   1. The item is a dependency (Client/Internal span ? RemoteDependencyData)
 //   2. gen_ai.operation.name is present and NOT in the excluded set
 //      (excluded: retrieval, execute_tool, invoke_agent, create_agent)
 //   3. Token counts: gen_ai.usage.input_tokens and/or gen_ai.usage.output_tokens
@@ -195,9 +265,13 @@ static void EmitFakeGenAIDependency(ActivitySource source)
 // ---------------------------------------------------------------------------
 // Processor that stamps every span with test.agent
 // ---------------------------------------------------------------------------
-sealed class TestAgentProcessor(string agentName) : BaseProcessor<Activity>
+sealed class TestAgentProcessor(string agentName, string runId) : BaseProcessor<Activity>
 {
-    public override void OnStart(Activity data) => data.SetTag("test.agent", agentName);
+    public override void OnStart(Activity data)
+    {
+        data.SetTag("test.agent", agentName);
+        data.SetTag("test.runId", runId);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -224,13 +298,12 @@ sealed class CustomHeaderPolicy : HttpPipelinePolicy
 }
 
 // ---------------------------------------------------------------------------
-// Weather plugin - exposes the weather tool as a KernelFunction
+// Weather plugin - exposes the weather tool as a static method for MAF
 // ---------------------------------------------------------------------------
-sealed class WeatherPlugin
+static class WeatherPlugin
 {
-    [KernelFunction("get_current_weather")]
     [Description("Gets the current weather for a given location.")]
-    public string GetCurrentWeather(
+    public static string GetCurrentWeather(
         [Description("The city and state, e.g. San Francisco, CA")] string location,
         [Description("The temperature unit (defaults to fahrenheit)")] string unit = "fahrenheit")
     {
@@ -245,7 +318,7 @@ sealed class WeatherPlugin
             data = (68, "Partly cloudy");
 
         int temp = unit == "celsius" ? (int)((data.TempF - 32) * 5.0 / 9.0) : data.TempF;
-        string unitLabel = unit == "celsius" ? "°C" : "°F";
+        string unitLabel = unit == "celsius" ? "�C" : "�F";
 
         Console.WriteLine($"[Tool] get_current_weather(\"{location}\", \"{unit}\")");
 
