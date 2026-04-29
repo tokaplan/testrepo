@@ -25,3 +25,14 @@ Thumbs.db
 /WeatherChat/publish-11.zip
 /WeatherChat/publish-11-agentic.zip
 /WeatherChat/publish-10-agentic.zip
+
+
+## Python
+__pycache__/
+*.pyc
+.venv/
+
+## Node.js
+node_modules/
+npm-debug.log
+package-lock.json

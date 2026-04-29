@@ -1,0 +1,20 @@
+{
+  "name": "langchain-nodejs-weather",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "LangChain.js port of WeatherChatMAF - same Foundry endpoints, same deployments, same weather tool. All telemetry comes from AKS App Monitoring auto-instrumentation; only test.* span attributes are added in code.",
+  "main": "main.js",
+  "scripts": {
+    "start": "node main.js"
+  },
+  "dependencies": {
+    "@langchain/core": "^0.3.0",
+    "@langchain/langgraph": "^0.4.0",
+    "@langchain/openai": "^0.6.0",
+    "@opentelemetry/api": "^1.9.0",
+    "langchain": "^0.3.0",
+    "openai": "^5.0.0",
+    "zod": "^3.23.0"
+  }
+}

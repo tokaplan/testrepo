@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: langchain-python
+  namespace: langchain-agents
+  labels:
+    app: langchain-python
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: langchain-python
+  template:
+    metadata:
+      labels:
+        app: langchain-python
+      annotations:
+        # AKS App Monitoring private-preview Python auto-instrumentation. The
+        # Instrumentation CR named "default" lives in this namespace.
+        instrumentation.opentelemetry.io/private-preview-inject-python: "default"
+    spec:
+      containers:
+        - name: agent
+          image: aicommon.azurecr.io/alkaplan/langchain-python:3
+          imagePullPolicy: Always
+          env:
+            - name: AZURE_OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: foundry-secrets
+                  key: AZURE_OPENAI_API_KEY
+            - name: LOOP_FOREVER
+              value: "1"
+            - name: LOOP_INTERVAL_SECONDS
+              value: "60"
+            - name: OTEL_SERVICE_NAME
+              value: "LangChainPython"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"

@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: langchain-nodejs
+  namespace: langchain-agents
+  labels:
+    app: langchain-nodejs
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: langchain-nodejs
+  template:
+    metadata:
+      labels:
+        app: langchain-nodejs
+      annotations:
+        # AKS App Monitoring auto-instrumentation injects the Microsoft Node.js
+        # OpenTelemetry distro using the `default` Instrumentation CR in the
+        # langchain-agents namespace.
+        instrumentation.opentelemetry.io/inject-nodejs: "true"
+    spec:
+      containers:
+        - name: agent
+          image: aicommon.azurecr.io/alkaplan/langchain-nodejs:4
+          imagePullPolicy: Always
+          env:
+            - name: AZURE_OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: foundry-secrets
+                  key: AZURE_OPENAI_API_KEY
+            - name: LOOP_FOREVER
+              value: "1"
+            - name: LOOP_INTERVAL_SECONDS
+              value: "60"
+            - name: OTEL_SERVICE_NAME
+              value: "LangChainNodeJs"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
