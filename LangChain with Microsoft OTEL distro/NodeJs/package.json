@@ -1,0 +1,19 @@
+{
+  "name": "langchain-nodejs-msdistro",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "main.js",
+  "scripts": {
+    "start": "node --import ./telemetry.mjs main.js"
+  },
+  "dependencies": {
+    "@langchain/core": "^0.3.0",
+    "@langchain/langgraph": "^0.4.0",
+    "@langchain/openai": "^0.6.0",
+    "@microsoft/opentelemetry": "latest",
+    "langchain": "^0.3.0",
+    "openai": "^5.0.0",
+    "zod": "^3.23.0"
+  }
+}
