@@ -1,12 +1,10 @@
 """
 LangChainPython with Microsoft OpenTelemetry distro - same agent as the
-sibling LangChainPython project, but instrumented purely via Microsoft's
-`microsoft-opentelemetry` distro.
+sibling LangChainPython project.
 
-Calling `use_microsoft_opentelemetry(...)` is the only line of telemetry
-setup. It internally enables Azure Monitor export AND turns on the bundled
-LangChain instrumentation (which emits gen_ai.* spans for chat-model and
-LangGraph agent invocations).
+This file contains zero OpenTelemetry references. Telemetry is supplied by
+an out-of-tree instrumentation setup (the Microsoft OpenTelemetry distro,
+configured separately) so the agent code itself stays clean.
 """
 
 from __future__ import annotations
@@ -17,8 +15,6 @@ import os
 import sys
 import uuid
 from typing import Annotated
-
-from microsoft.opentelemetry import use_microsoft_opentelemetry
 
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from langchain_core.tools import tool
@@ -261,26 +257,6 @@ async def main() -> int:
     run_id = sys.argv[1] if len(sys.argv) > 1 else str(uuid.uuid4())
     print(f"Service: {SERVICE_NAME}")
     print(f"RunId:   {run_id}")
-
-    connection_string = os.environ.get(
-        "APPLICATIONINSIGHTS_CONNECTION_STRING", DEFAULT_APP_INSIGHTS_CONNECTION_STRING
-    )
-    print(f"AppInsights: {connection_string[:60]}...")
-
-    # The SINGLE call that wires up Microsoft's OTEL distro - exporter + all
-    # bundled instrumentations (langchain, openai, agent_framework, ...).
-    # Service name is set via OTEL_SERVICE_NAME env var (the distro picks it
-    # up via the standard OTEL Resource detector).
-    os.environ.setdefault("OTEL_SERVICE_NAME", SERVICE_NAME)
-    use_microsoft_opentelemetry(
-        enable_azure_monitor=True,
-        azure_monitor_connection_string=connection_string,
-        sampling_ratio=1.0,
-        instrumentation_options={
-            "langchain": {"enabled": True},
-            "openai": {"enabled": True},
-        },
-    )
 
     api_key = os.environ.get("AZURE_OPENAI_API_KEY", "")
     if not api_key:

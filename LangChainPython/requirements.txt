@@ -2,14 +2,3 @@ langchain>=0.3.0
 langchain-openai>=0.2.0
 langchain-core>=0.3.0
 openai>=1.50.0
-
-# GenAI instrumentation packages, auto-discovered by the AKS Python
-# auto-instrumentation distro via the `opentelemetry_instrumentor` entry-point.
-# - opentelemetry-instrumentation-openai-v2 emits chat-level GenAI spans for
-#   the OpenAI Python SDK with OTEL gen_ai.* semantic-convention attributes.
-# - opentelemetry-instrumentation-langchain (from OpenLLMetry / Traceloop)
-#   emits agent/chain/tool-level spans with gen_ai.* attributes for LangChain.
-# Pinned to versions compatible with the auto-instr distro's bundled
-# opentelemetry-util-http==0.60b0 / opentelemetry-instrumentation==0.60b0.
-opentelemetry-instrumentation-openai-v2==2.0b0
-opentelemetry-instrumentation-langchain>=0.55.4

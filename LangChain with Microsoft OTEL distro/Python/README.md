@@ -1,23 +1,31 @@
 # LangChainPython with Microsoft OpenTelemetry distro
 
-Same agent as the sibling `LangChainPython` project, but its only telemetry
-setup is the Microsoft distro:
+Same agent as the sibling `LangChainPython` project. Telemetry is supplied
+by an out-of-tree instrumentation setup - this folder ships only the agent
+code itself.
 
-```python
-from microsoft.opentelemetry import use_microsoft_opentelemetry
-use_microsoft_opentelemetry(
-    enable_azure_monitor=True,
-    azure_monitor_connection_string=...,
-    instrumentation_options={
-        "langchain": {"enabled": True},
-        "openai": {"enabled": True},
-    },
-)
-```
+To wire up Microsoft's `microsoft-opentelemetry` distro and emit `gen_ai.*`
+spans to Application Insights, add the following on top of `requirements.txt`
+and `main.py` outside of source control:
 
-That single call replaces what previously required separate
+- requirements.txt: `microsoft-opentelemetry`
+- main.py: at the start of `main()`,
+    ```python
+    from microsoft.opentelemetry import use_microsoft_opentelemetry
+    use_microsoft_opentelemetry(
+        enable_azure_monitor=True,
+        azure_monitor_connection_string=...,
+        instrumentation_options={
+            "langchain": {"enabled": True},
+            "openai": {"enabled": True},
+        },
+    )
+    ```
+
+That single call replaces what a full setup with
 `opentelemetry-instrumentation-openai-v2` +
-`opentelemetry-instrumentation-langchain` + Azure Monitor exporter wiring.
+`opentelemetry-instrumentation-langchain` + Azure Monitor exporter would
+otherwise need.
 
 ## Run locally
 
@@ -29,8 +37,5 @@ $env:AZURE_OPENAI_API_KEY = "<your foundry key>"
 python main.py
 ```
 
-The agent logs to Application Insights `data-1` in `alkaplan-longchain` by
-default (or wherever `APPLICATIONINSIGHTS_CONNECTION_STRING` points).
-
-`cloud_RoleName` is `LangChainPython-MS-Distro` so this run can be filtered
-out from the original `LangChainPython` data side by side.
+`cloud_RoleName` is `LangChainPython-MS-Distro` so this run can be
+filtered out from the original `LangChainPython` data side by side.
