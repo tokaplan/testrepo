@@ -13,7 +13,7 @@ import sys
 from typing import Annotated
 
 from opentelemetry import trace, metrics
-from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace import TracerProvider, SpanProcessor as BaseSpanProcessor
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.metrics import MeterProvider
@@ -103,6 +103,26 @@ def get_current_weather(
 # ---------------------------------------------------------------------------
 # Telemetry setup
 # ---------------------------------------------------------------------------
+class TestSpanProcessor(BaseSpanProcessor):
+    """Stamps every span with test.agent and test.protocol attributes."""
+    def __init__(self, agent_name: str, protocol: str):
+        self._agent_name = agent_name
+        self._protocol = protocol
+
+    def on_start(self, span, parent_context=None):
+        span.set_attribute("test.agent", self._agent_name)
+        span.set_attribute("test.protocol", self._protocol)
+
+    def on_end(self, span):
+        pass
+
+    def shutdown(self):
+        pass
+
+    def force_flush(self, timeout_millis=None):
+        return True
+
+
 def setup_telemetry(connection_string: str):
     """Configure OpenTelemetry tracing & metrics with Azure Monitor export."""
     # --- Tracing ---
@@ -111,6 +131,7 @@ def setup_telemetry(connection_string: str):
         "service.name": "WeatherChatPython",
     })
     tracer_provider = TracerProvider(resource=resource)
+    tracer_provider.add_span_processor(TestSpanProcessor("WeatherChatPython", "completions"))
     tracer_provider.add_span_processor(BatchSpanProcessor(trace_exporter))
     trace.set_tracer_provider(tracer_provider)
 

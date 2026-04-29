@@ -128,7 +128,7 @@ var azureClient = new AzureOpenAIClient(
     new ApiKeyCredential(apiKey));
 var tools = new List<AITool> { AIFunctionFactory.Create(WeatherPlugin.GetCurrentWeather) };
 
-var agents = new List<(string label, AIAgent agent)>();
+var agents = new List<(string label, AIAgent agent, string protocol)>();
 HashSet<string> responsesApiDeployments = ["deployment-gpt-5.4-mini", "deployment-gpt-4o", "deployment-gpt-4o-mini", "deployment-o4-mini"];
 
 foreach (var deployment in deploymentNames)
@@ -147,7 +147,7 @@ foreach (var deployment in deploymentNames)
         AIAgent respAgent = new ChatClientAgent(respClient,
             instructions: instructions, name: $"WeatherAgent-{deployment}-responses",
             description: "Weather assistant", tools: tools);
-        agents.Add(($"{deployment} [responses]", new OpenTelemetryAgent(respAgent)));
+        agents.Add(($"{deployment} [responses]", new OpenTelemetryAgent(respAgent), "responses"));
 
         // Chat Completions API agent for the same model
         var ccClient = azureClient.GetChatClient(deployment)
@@ -156,7 +156,7 @@ foreach (var deployment in deploymentNames)
         AIAgent ccAgent = new ChatClientAgent(ccClient,
             instructions: instructions, name: $"WeatherAgent-{deployment}-completions",
             description: "Weather assistant", tools: tools);
-        agents.Add(($"{deployment} [completions]", new OpenTelemetryAgent(ccAgent)));
+        agents.Add(($"{deployment} [completions]", new OpenTelemetryAgent(ccAgent), "completions"));
     }
     else
     {
@@ -167,7 +167,7 @@ foreach (var deployment in deploymentNames)
         AIAgent ccAgent = new ChatClientAgent(ccClient,
             instructions: instructions, name: $"WeatherAgent-{deployment}",
             description: "Weather assistant", tools: useTools ? tools : null);
-        agents.Add(($"{deployment} [completions]", new OpenTelemetryAgent(ccAgent)));
+        agents.Add(($"{deployment} [completions]", new OpenTelemetryAgent(ccAgent), "completions"));
     }
 }
 
@@ -178,17 +178,18 @@ Console.WriteLine($"You: {userPrompt}");
 Console.WriteLine();
 
 // ----- Invoke all agents sequentially to avoid batch export race conditions ---
-var results = new List<(string deployment, AgentResponse? response, Exception? error)>();
-foreach (var (deployment, agent) in agents)
+var results = new List<(string label, AgentResponse? response, Exception? error)>();
+foreach (var (label, agent, protocol) in agents)
 {
+    TestAgentProcessor.SetProtocol(protocol);
     try
     {
         AgentResponse response = await agent.RunAsync(userPrompt);
-        results.Add((deployment, response, null));
+        results.Add((label, response, null));
     }
     catch (Exception ex)
     {
-        results.Add((deployment, null, ex));
+        results.Add((label, null, ex));
     }
 }
 
@@ -267,10 +268,16 @@ static void EmitFakeGenAIDependency(ActivitySource source)
 // ---------------------------------------------------------------------------
 sealed class TestAgentProcessor(string agentName, string runId) : BaseProcessor<Activity>
 {
+    private static readonly AsyncLocal<string?> _protocol = new();
+
+    public static void SetProtocol(string protocol) => _protocol.Value = protocol;
+
     public override void OnStart(Activity data)
     {
         data.SetTag("test.agent", agentName);
         data.SetTag("test.runId", runId);
+        if (_protocol.Value is { } protocol)
+            data.SetTag("test.protocol", protocol);
     }
 }
 

@@ -7,6 +7,7 @@ This is a Python port of the C# WeatherChatMAF project.
 """
 
 import asyncio
+import contextvars
 import json
 import os
 import sys
@@ -27,6 +28,7 @@ from opentelemetry.instrumentation.openai_v2 import OpenAIInstrumentor
 
 from agent_framework import Agent, tool
 from agent_framework.observability import enable_instrumentation
+from agent_framework.foundry import FoundryChatClient
 from agent_framework_openai import OpenAIChatClient, OpenAIChatCompletionClient
 
 # ---------------------------------------------------------------------------
@@ -91,14 +93,22 @@ FAKE_GENAI_SOURCE_NAME = "FakeGenAI"
 
 
 class TestAgentSpanProcessor(BaseSpanProcessor):
-    """Stamps every span with test.agent and test.runId attributes."""
+    """Stamps every span with test.agent, test.runId, and test.protocol attributes."""
     def __init__(self, agent_name: str, run_id: str):
         self._agent_name = agent_name
         self._run_id = run_id
+        self._protocol_ctx = contextvars.ContextVar("test_protocol", default="")
+
+    def set_protocol(self, protocol: str):
+        """Set the protocol for the current context (call before agent.run)."""
+        self._protocol_ctx.set(protocol)
 
     def on_start(self, span, parent_context=None):
         span.set_attribute("test.agent", self._agent_name)
         span.set_attribute("test.runId", self._run_id)
+        protocol = self._protocol_ctx.get("")
+        if protocol:
+            span.set_attribute("test.protocol", protocol)
 
     def on_end(self, span):
         pass
@@ -117,8 +127,9 @@ def configure_telemetry(connection_string: str, run_id: str):
     })
 
     # -- Tracing --
+    test_processor = TestAgentSpanProcessor("WeatherChatMAFPython", run_id)
     tracer_provider = TracerProvider(resource=resource)
-    tracer_provider.add_span_processor(TestAgentSpanProcessor("WeatherChatMAFPython", run_id))
+    tracer_provider.add_span_processor(test_processor)
     tracer_provider.add_span_processor(
         BatchSpanProcessor(
             AzureMonitorTraceExporter(
@@ -143,7 +154,7 @@ def configure_telemetry(connection_string: str, run_id: str):
     # Enable MAF's built-in telemetry (agent spans, gen_ai metrics)
     enable_instrumentation()
 
-    return tracer_provider, meter_provider
+    return tracer_provider, meter_provider, test_processor
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +216,7 @@ def get_current_weather(
 async def main() -> int:
     run_id = sys.argv[1] if len(sys.argv) > 1 else str(uuid.uuid4())
     connection_string = _build_connection_string()
-    tracer_provider, meter_provider = configure_telemetry(connection_string, run_id)
+    tracer_provider, meter_provider, test_processor = configure_telemetry(connection_string, run_id)
 
     print("Enter your Azure OpenAI API key: ")
     print(f"AppInsights: {connection_string}")
@@ -237,7 +248,7 @@ async def main() -> int:
         agent_tools = [get_current_weather] if use_tools else None
 
         if deployment in RESPONSES_API_DEPLOYMENTS:
-            # Responses API agent
+            # Responses API agent (OpenAIChatClient)
             client_resp = OpenAIChatClient(
                 model=deployment,
                 base_url=BASE_URL,
@@ -250,7 +261,22 @@ async def main() -> int:
                 name=f"WeatherAgent-{deployment}-responses",
                 tools=agent_tools,
             )
-            agents.append((f"{deployment} [responses]", agent_resp))
+            agents.append((f"{deployment} [responses]", agent_resp, "responses"))
+
+            # Responses API agent (FoundryChatClient)
+            from azure.core.credentials import AzureKeyCredential
+            client_foundry = FoundryChatClient(
+                project_endpoint=ENDPOINT,
+                model=deployment,
+                credential=AzureKeyCredential(api_key),
+            )
+            agent_foundry = Agent(
+                client=client_foundry,
+                instructions=instructions,
+                name=f"WeatherAgent-{deployment}-foundry",
+                tools=agent_tools,
+            )
+            agents.append((f"{deployment} [RAPI via foundry]", agent_foundry, "RAPI via foundry"))
 
             # Chat Completions API agent for the same model
             client_cc = OpenAIChatCompletionClient(
@@ -264,7 +290,7 @@ async def main() -> int:
                 name=f"WeatherAgent-{deployment}-completions",
                 tools=agent_tools,
             )
-            agents.append((f"{deployment} [completions]", agent_cc))
+            agents.append((f"{deployment} [completions]", agent_cc, "completions"))
         else:
             # Chat Completions only
             client = OpenAIChatCompletionClient(
@@ -278,7 +304,7 @@ async def main() -> int:
                 name=f"WeatherAgent-{deployment}",
                 tools=agent_tools,
             )
-            agents.append((f"{deployment} [completions]", agent))
+            agents.append((f"{deployment} [completions]", agent, "completions"))
 
     user_prompt = "What's the weather like in Seattle and San Francisco?"
 
@@ -287,15 +313,16 @@ async def main() -> int:
     print()
 
     # -- Invoke all agents in parallel -------------------------------------
-    async def run_agent(deployment, agent):
+    async def run_agent(label, agent, protocol):
+        test_processor.set_protocol(protocol)
         try:
             response = await agent.run(user_prompt)
-            return (deployment, response, None)
+            return (label, response, None)
         except Exception as ex:
-            return (deployment, None, ex)
+            return (label, None, ex)
 
     results = await asyncio.gather(
-        *(run_agent(dep, ag) for dep, ag in agents)
+        *(run_agent(label, ag, proto) for label, ag, proto in agents)
     )
 
     for deployment, response, error in results:

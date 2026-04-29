@@ -54,7 +54,7 @@ ActivitySource fakeGenAISource = new(FakeGenAISourceName);
 
 using var tracerProvider = Sdk.CreateTracerProviderBuilder()
     .ConfigureResource(r => r.AddService("WeatherChat"))
-    .AddProcessor(new TestAgentProcessor("WeatherChat"))
+    .AddProcessor(new TestAgentProcessor("WeatherChat", "completions"))
     .AddSource("OpenAI.*")
     .AddSource("Microsoft.SemanticKernel*")
     .AddSource(FakeGenAISourceName)
@@ -195,9 +195,13 @@ static void EmitFakeGenAIDependency(ActivitySource source)
 // ---------------------------------------------------------------------------
 // Processor that stamps every span with test.agent
 // ---------------------------------------------------------------------------
-sealed class TestAgentProcessor(string agentName) : BaseProcessor<Activity>
+sealed class TestAgentProcessor(string agentName, string protocol) : BaseProcessor<Activity>
 {
-    public override void OnStart(Activity data) => data.SetTag("test.agent", agentName);
+    public override void OnStart(Activity data)
+    {
+        data.SetTag("test.agent", agentName);
+        data.SetTag("test.protocol", protocol);
+    }
 }
 
 // ---------------------------------------------------------------------------
