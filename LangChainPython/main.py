@@ -178,6 +178,27 @@ def _make_foundry_chat(deployment: str, api_key: str) -> ChatOpenAI:
     )
 
 
+def _make_foundry_responses_chat(deployment: str, api_key: str) -> ChatOpenAI:
+    """ChatOpenAI configured to use the OpenAI Responses API
+    (POST /openai/v1/responses) against the Foundry endpoint.
+
+    This is the only path in our setup that supports Responses API: LangChain's
+    `AzureChatOpenAI` + `use_responses_api=True` is currently broken against the
+    Azure OpenAI endpoint (returns 405 - see langchain-ai/langchain#31653), but
+    pointing a plain `ChatOpenAI` at the Foundry `/openai/v1/` base URL routes
+    successfully to `/openai/v1/responses`.
+    """
+    return ChatOpenAI(
+        model=deployment,
+        base_url=BASE_URL,
+        api_key=api_key,
+        timeout=60,
+        max_retries=1,
+        default_headers={"api-key": api_key},
+        use_responses_api=True,
+    )
+
+
 def _extract_text(message) -> str:
     content = getattr(message, "content", None)
     if content is None:
@@ -253,6 +274,18 @@ def build_agents(api_key: str):
                 )
             except Exception as ex:
                 print(f"[build] failed foundry {deployment}: {ex}")
+
+            try:
+                chat_fr = _make_foundry_responses_chat(deployment, api_key)
+                agents.append(
+                    (
+                        f"{deployment} [foundry-responses]",
+                        _build_agent(chat_fr, use_tools),
+                        "foundry-responses",
+                    )
+                )
+            except Exception as ex:
+                print(f"[build] failed foundry-responses {deployment}: {ex}")
 
     return agents
 

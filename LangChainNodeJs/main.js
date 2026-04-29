@@ -150,6 +150,28 @@ function makeFoundryChat(deployment, apiKey) {
   });
 }
 
+// ChatOpenAI configured to use the OpenAI Responses API
+// (POST /openai/v1/responses) against the Foundry endpoint.
+//
+// This is the only path in our setup that supports the Responses API:
+// LangChain's `AzureChatOpenAI` + `useResponsesApi: true` is currently broken
+// against the Azure OpenAI endpoint (returns 405 - see
+// langchain-ai/langchain#31653), but pointing a plain `ChatOpenAI` at the
+// Foundry `/openai/v1/` base URL routes successfully to `/openai/v1/responses`.
+function makeFoundryResponsesChat(deployment, apiKey) {
+  return new ChatOpenAI({
+    model: deployment,
+    apiKey,
+    timeout: 60_000,
+    maxRetries: 1,
+    useResponsesApi: true,
+    configuration: {
+      baseURL: BASE_URL,
+      defaultHeaders: { "api-key": apiKey },
+    },
+  });
+}
+
 function buildAgentRunner(chat, useTools) {
   const sys = instructions(useTools);
 
@@ -227,6 +249,17 @@ function buildAgents(apiKey) {
         });
       } catch (ex) {
         console.log(`[build] failed foundry ${deployment}: ${ex}`);
+      }
+
+      try {
+        const chatFR = makeFoundryResponsesChat(deployment, apiKey);
+        agents.push({
+          label: `${deployment} [foundry-responses]`,
+          protocol: "foundry-responses",
+          run: buildAgentRunner(chatFR, useTools),
+        });
+      } catch (ex) {
+        console.log(`[build] failed foundry-responses ${deployment}: ${ex}`);
       }
     }
   }
