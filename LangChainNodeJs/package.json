@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "LangChain.js port of WeatherChatMAF - same Foundry endpoints, same deployments, same weather tool. Telemetry is supplied by an out-of-tree instrumentation setup; this package itself contains no OpenTelemetry deps.",
+  "description": "LangChain.js port of WeatherChatMAF - same Foundry endpoints, same deployments, same weather tool. All telemetry comes from AKS App Monitoring auto-instrumentation; only test.* span attributes are added in code.",
   "main": "main.js",
   "scripts": {
     "start": "node main.js"
@@ -12,6 +12,11 @@
     "@langchain/core": "^0.3.0",
     "@langchain/langgraph": "^0.4.0",
     "@langchain/openai": "^0.6.0",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/instrumentation": "^0.205.0",
+    "@traceloop/instrumentation-langchain": "0.14.6",
+    "@traceloop/instrumentation-openai": "^0.18.0",
+    "import-in-the-middle": "^1.13.0",
     "langchain": "^0.3.0",
     "openai": "^5.0.0",
     "zod": "^3.23.0"
