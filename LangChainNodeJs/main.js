@@ -1,10 +1,11 @@
 /**
  * LangChainNodeJs - LangChain.js port of WeatherChatMAF.
  *
- * All telemetry comes from AKS App Monitoring auto-instrumentation (the
- * Microsoft Node.js OTEL distro injected by the
- * `azure-monitor-auto-instrumentation-nodejs` init container). No in-code
- * OpenTelemetry usage at all - we don't even create our own parent spans.
+ * All telemetry comes from AKS App Monitoring auto-instrumentation plus the
+ * Traceloop OpenLLMetry OpenAI + LangChain instrumentation packages, wired
+ * up by `instrumentation.js` which is loaded via `node --import` ahead of
+ * this file so that the OpenTelemetry instrumentation hooks patch the
+ * Open AI / LangChain modules before they're imported here.
  */
 
 import { AzureChatOpenAI, ChatOpenAI } from "@langchain/openai";

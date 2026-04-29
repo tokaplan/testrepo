@@ -10,5 +10,6 @@ COPY package.json /app/package.json
 RUN npm install --omit=dev --no-audit --no-fund
 
 COPY main.js /app/main.js
+COPY instrumentation.js /app/instrumentation.js
 
-CMD ["node", "main.js"]
+CMD ["node", "--import", "./instrumentation.js", "main.js"]
