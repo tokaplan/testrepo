@@ -14,16 +14,11 @@ itself still works.
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import json
 import os
 import sys
 import uuid
-from typing import Annotated, Optional
-
-from opentelemetry import trace
-from opentelemetry.trace import SpanKind
-from opentelemetry.sdk.trace import SpanProcessor as BaseSpanProcessor
+from typing import Annotated
 
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from langchain_core.tools import tool
@@ -54,62 +49,7 @@ NO_TOOL_DEPLOYMENTS = {
 }
 
 SERVICE_NAME = "LangChainPython"
-GENAI_SOURCE_NAME = "LangChainPython.GenAI"
 USER_PROMPT = "What's the weather like in Seattle and San Francisco?"
-
-
-# ---------------------------------------------------------------------------
-# Custom-attribute SpanProcessor
-# ---------------------------------------------------------------------------
-class TestAttributesProcessor(BaseSpanProcessor):
-    """Stamps every span with test.agent / test.runId / test.protocol.
-
-    Attached to whatever TracerProvider the AKS auto-instrumentation distro
-    has installed as the global provider; if no SDK provider is present (e.g.
-    local runs without auto-instrumentation), `add_span_processor` is unavailable
-    and the call is silently skipped.
-    """
-
-    def __init__(self, agent_name: str, run_id: str):
-        self._agent_name = agent_name
-        self._run_id = run_id
-        self._protocol_ctx: "contextvars.ContextVar[str]" = contextvars.ContextVar(
-            "test_protocol", default=""
-        )
-
-    def set_protocol(self, protocol: str) -> None:
-        self._protocol_ctx.set(protocol)
-
-    def on_start(self, span, parent_context=None):  # type: ignore[override]
-        span.set_attribute("test.agent", self._agent_name)
-        span.set_attribute("test.runId", self._run_id)
-        protocol = self._protocol_ctx.get("")
-        if protocol:
-            span.set_attribute("test.protocol", protocol)
-
-    def on_end(self, span):  # type: ignore[override]
-        return None
-
-    def shutdown(self):  # type: ignore[override]
-        return None
-
-    def force_flush(self, timeout_millis: Optional[int] = None) -> bool:  # type: ignore[override]
-        return True
-
-
-def attach_test_processor(run_id: str) -> TestAttributesProcessor:
-    processor = TestAttributesProcessor(SERVICE_NAME, run_id)
-    provider = trace.get_tracer_provider()
-    add = getattr(provider, "add_span_processor", None)
-    if callable(add):
-        add(processor)
-        print(f"[telemetry] attached TestAttributesProcessor to {type(provider).__name__}")
-    else:
-        print(
-            "[telemetry] global TracerProvider has no add_span_processor; "
-            "spans will not be stamped (auto-instrumentation likely not present)"
-        )
-    return processor
 
 
 # ---------------------------------------------------------------------------
@@ -293,27 +233,16 @@ def build_agents(api_key: str):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-async def run_once(agents, test_processor: TestAttributesProcessor, run_label: str) -> int:
-    tracer = trace.get_tracer(GENAI_SOURCE_NAME)
-
+async def run_once(agents, run_label: str) -> int:
     print(f"\n=== Run: {run_label} ===")
     print(f"You: {USER_PROMPT}\n")
 
     async def _run(label, run_fn, protocol):
-        test_processor.set_protocol(protocol)
-        with tracer.start_as_current_span(
-            f"langchain.agent.{label}", kind=SpanKind.INTERNAL
-        ) as span:
-            span.set_attribute("agent.label", label)
-            span.set_attribute("agent.protocol", protocol)
-            try:
-                text = await run_fn(USER_PROMPT)
-                span.set_attribute("agent.success", True)
-                return (label, text, None)
-            except Exception as ex:
-                span.set_attribute("agent.success", False)
-                span.set_attribute("agent.error", str(ex)[:512])
-                return (label, None, ex)
+        try:
+            text = await run_fn(USER_PROMPT)
+            return (label, text, None)
+        except Exception as ex:
+            return (label, None, ex)
 
     results = await asyncio.gather(*(_run(*a) for a in agents))
     successes = 0
@@ -334,8 +263,6 @@ async def main() -> int:
     print(f"Service: {SERVICE_NAME}")
     print(f"RunId:   {run_id}")
 
-    test_processor = attach_test_processor(run_id)
-
     api_key = os.environ.get("AZURE_OPENAI_API_KEY", "")
     if not api_key:
         print("Error: AZURE_OPENAI_API_KEY is required.")
@@ -350,7 +277,7 @@ async def main() -> int:
     iteration = 0
     while True:
         iteration += 1
-        await run_once(agents, test_processor, f"iteration-{iteration}")
+        await run_once(agents, f"iteration-{iteration}")
         if not loop_forever:
             break
         print(f"\nSleeping {interval}s before next iteration...")

@@ -22,7 +22,7 @@ spec:
     spec:
       containers:
         - name: agent
-          image: aicommon.azurecr.io/alkaplan/langchain-nodejs:4
+          image: aicommon.azurecr.io/alkaplan/langchain-nodejs:9
           imagePullPolicy: Always
           env:
             - name: AZURE_OPENAI_API_KEY

@@ -3,16 +3,9 @@
  *
  * All telemetry comes from AKS App Monitoring auto-instrumentation (the
  * Microsoft Node.js OTEL distro injected by the
- * `azure-monitor-auto-instrumentation-nodejs` init container). The only
- * in-code instrumentation kept here is a SpanProcessor that stamps the same
- * `test.agent` / `test.runId` / `test.protocol` attributes that
- * WeatherChatMAFPython puts on every span, so the data lines up across runs.
- *
- * When run locally (no auto-instrumentation), no telemetry is exported. The
- * agent itself still works.
+ * `azure-monitor-auto-instrumentation-nodejs` init container). No in-code
+ * OpenTelemetry usage at all - we don't even create our own parent spans.
  */
-
-import { SpanKind, trace } from "@opentelemetry/api";
 
 import { AzureChatOpenAI, ChatOpenAI } from "@langchain/openai";
 import { tool } from "@langchain/core/tools";
@@ -53,25 +46,7 @@ const NO_TOOL_DEPLOYMENTS = new Set([
 ]);
 
 const SERVICE_NAME = "LangChainNodeJs";
-const GENAI_SOURCE_NAME = "LangChainNodeJs.GenAI";
 const USER_PROMPT = "What's the weather like in Seattle and San Francisco?";
-
-// ---------------------------------------------------------------------------
-// Custom-attribute helper
-// ---------------------------------------------------------------------------
-//
-// AKS App Monitoring's Node.js distro registers an OpenTelemetry SDK 2.x
-// NodeTracerProvider as the global delegate. SDK 2.x removed
-// `addSpanProcessor`, so we cannot post-hoc attach a processor that stamps
-// every span. Instead we stamp `test.agent` / `test.runId` / `test.protocol`
-// directly on the parent span we create per agent invocation - child spans
-// produced by the auto-instrumented http/openai libraries inherit the same
-// trace/operationId for correlation.
-function stampTestAttrs(span, agentName, runId, protocol) {
-  span.setAttribute("test.agent", agentName);
-  span.setAttribute("test.runId", runId);
-  if (protocol) span.setAttribute("test.protocol", protocol);
-}
 
 // ---------------------------------------------------------------------------
 // Weather tool
@@ -269,32 +244,17 @@ function buildAgents(apiKey) {
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
-async function runOnce(agents, runId, runLabel) {
-  const tracer = trace.getTracer(GENAI_SOURCE_NAME);
+async function runOnce(agents, runLabel) {
   console.log(`\n=== Run: ${runLabel} ===`);
   console.log(`You: ${USER_PROMPT}\n`);
 
-  const tasks = agents.map(async ({ label, protocol, run }) => {
-    return await tracer.startActiveSpan(
-      `langchain.agent.${label}`,
-      { kind: SpanKind.INTERNAL },
-      async (span) => {
-        stampTestAttrs(span, SERVICE_NAME, runId, protocol);
-        span.setAttribute("agent.label", label);
-        span.setAttribute("agent.protocol", protocol);
-        try {
-          const text = await run(USER_PROMPT);
-          span.setAttribute("agent.success", true);
-          span.end();
-          return { label, text };
-        } catch (error) {
-          span.setAttribute("agent.success", false);
-          span.setAttribute("agent.error", String(error).slice(0, 512));
-          span.end();
-          return { label, error };
-        }
-      }
-    );
+  const tasks = agents.map(async ({ label, run }) => {
+    try {
+      const text = await run(USER_PROMPT);
+      return { label, text };
+    } catch (error) {
+      return { label, error };
+    }
   });
 
   const results = await Promise.all(tasks);
@@ -336,7 +296,7 @@ async function main() {
   let iteration = 0;
   while (true) {
     iteration += 1;
-    await runOnce(agents, runId, `iteration-${iteration}`);
+    await runOnce(agents, `iteration-${iteration}`);
     if (!loopForever) break;
     console.log(`\nSleeping ${interval}s before next iteration...`);
     await new Promise((r) => setTimeout(r, interval * 1000));
