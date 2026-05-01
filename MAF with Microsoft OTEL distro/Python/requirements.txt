@@ -1,0 +1,3 @@
+microsoft-opentelemetry
+agent-framework
+agent-framework-openai
