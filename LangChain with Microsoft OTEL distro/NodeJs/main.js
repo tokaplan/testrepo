@@ -229,14 +229,22 @@ async function runOnce(agents, runLabel) {
   console.log(`\n=== Run: ${runLabel} ===`);
   console.log(`You: ${USER_PROMPT}\n`);
 
-  const tasks = agents.map(async ({ label, run }) => {
-    try {
-      const text = await run(USER_PROMPT);
-      return { label, text };
-    } catch (error) {
-      return { label, error };
-    }
-  });
+  // The optional globalThis.__setTestProtocol shim is installed by
+  // telemetry.mjs (when running under `--import ./telemetry.mjs`). It tags
+  // every span produced inside fn() with the supplied protocol. When the
+  // shim is absent (e.g. running without the bootstrap), fall through.
+  const setProto = globalThis.__setTestProtocol ?? ((_p, fn) => fn());
+
+  const tasks = agents.map(async ({ label, protocol, run }) =>
+    setProto(protocol, async () => {
+      try {
+        const text = await run(USER_PROMPT);
+        return { label, text };
+      } catch (error) {
+        return { label, error };
+      }
+    })
+  );
 
   const results = await Promise.all(tasks);
   let successes = 0;

@@ -1,20 +1,27 @@
 """
 LangChainPython with Microsoft OpenTelemetry distro - same agent as the
-sibling LangChainPython project.
+sibling LangChainPython project, but instrumented purely via Microsoft's
+`microsoft-opentelemetry` distro.
 
-This file contains zero OpenTelemetry references. Telemetry is supplied by
-an out-of-tree instrumentation setup (the Microsoft OpenTelemetry distro,
-configured separately) so the agent code itself stays clean.
+Calling `use_microsoft_opentelemetry(...)` is the only line of telemetry
+setup. It internally enables Azure Monitor export AND turns on the bundled
+LangChain instrumentation (which emits gen_ai.* spans for chat-model and
+LangGraph agent invocations).
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import os
 import sys
 import uuid
 from typing import Annotated
+
+from microsoft.opentelemetry import use_microsoft_opentelemetry
+from opentelemetry import trace
+from opentelemetry.sdk.trace import SpanProcessor as BaseSpanProcessor
 
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from langchain_core.tools import tool
@@ -46,6 +53,40 @@ NO_TOOL_DEPLOYMENTS = {
 
 SERVICE_NAME = "LangChainPython-MS-Distro"
 USER_PROMPT = "What's the weather like in Seattle and San Francisco?"
+
+
+# ---------------------------------------------------------------------------
+# Test-tagging span processor: stamps test.agent / test.runId / test.protocol
+# ---------------------------------------------------------------------------
+class TestAgentSpanProcessor(BaseSpanProcessor):
+    _protocol_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
+        "test_protocol", default=""
+    )
+
+    def __init__(self, agent_name: str, run_id: str):
+        self._agent_name = agent_name
+        self._run_id = run_id
+
+    @classmethod
+    def set_protocol(cls, protocol: str) -> None:
+        cls._protocol_ctx.set(protocol)
+
+    def on_start(self, span, parent_context=None):
+        span.set_attribute("test.agent", self._agent_name)
+        span.set_attribute("test.runId", self._run_id)
+        protocol = self._protocol_ctx.get("")
+        if protocol:
+            span.set_attribute("test.protocol", protocol)
+
+    def on_end(self, span):
+        pass
+
+    def shutdown(self):
+        pass
+
+    def force_flush(self, timeout_millis=None):
+        return True
+
 
 # data-1 in alkaplan-longchain.
 DEFAULT_APP_INSIGHTS_CONNECTION_STRING = (
@@ -233,6 +274,7 @@ async def run_once(agents, run_label: str) -> int:
     print(f"You: {USER_PROMPT}\n")
 
     async def _run(label, run_fn, protocol):
+        TestAgentSpanProcessor.set_protocol(protocol)
         try:
             text = await run_fn(USER_PROMPT)
             return (label, text, None)
@@ -257,6 +299,26 @@ async def main() -> int:
     run_id = sys.argv[1] if len(sys.argv) > 1 else str(uuid.uuid4())
     print(f"Service: {SERVICE_NAME}")
     print(f"RunId:   {run_id}")
+
+    connection_string = os.environ.get(
+        "APPLICATIONINSIGHTS_CONNECTION_STRING", DEFAULT_APP_INSIGHTS_CONNECTION_STRING
+    )
+    print(f"AppInsights: {connection_string[:60]}...")
+
+    # The SINGLE call that wires up Microsoft's OTEL distro - exporter + all
+    # bundled instrumentations (langchain, openai, agent_framework, ...).
+    # Service name is set via OTEL_SERVICE_NAME env var (the distro picks it
+    # up via the standard OTEL Resource detector).
+    os.environ.setdefault("OTEL_SERVICE_NAME", SERVICE_NAME)
+    use_microsoft_opentelemetry(
+        enable_azure_monitor=True,
+        azure_monitor_connection_string=connection_string,
+        sampling_ratio=1.0,
+    )
+
+    # Add a tagging processor so we can filter by test.runId / test.protocol.
+    test_processor = TestAgentSpanProcessor(SERVICE_NAME, run_id)
+    trace.get_tracer_provider().add_span_processor(test_processor)
 
     api_key = os.environ.get("AZURE_OPENAI_API_KEY", "")
     if not api_key:
