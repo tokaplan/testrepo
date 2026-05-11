@@ -25,6 +25,7 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     except Exception:
         pass
 
+from azure.identity import DefaultAzureCredential
 from opentelemetry import trace
 from opentelemetry.sdk.trace import SpanProcessor as BaseSpanProcessor
 from microsoft.opentelemetry import use_microsoft_opentelemetry
@@ -171,10 +172,18 @@ async def main() -> int:
     test_processor = TestAgentSpanProcessor(SERVICE_NAME, run_id)
     trace.get_tracer_provider().add_span_processor(test_processor)
 
+    # Auth split:
+    #   - OpenAIChatClient / OpenAIChatCompletionClient use a static api_key
+    #     (Foundry's /openai/v1/ and Azure OpenAI both accept it; the openai
+    #     SDK puts it on Authorization: Bearer <key>).
+    #   - FoundryChatClient requires a TokenCredential (no api_key path), so
+    #     it gets DefaultAzureCredential. The azure-core pipeline acquires
+    #     tokens with the correct ai.azure.com audience by itself.
     api_key = os.environ.get("AZURE_OPENAI_API_KEY", "")
     if not api_key:
         print("Error: AZURE_OPENAI_API_KEY is required.")
         return 1
+    credential = DefaultAzureCredential()
 
     # -- Build one MAF agent per deployment --------------------------------
     agents = []
@@ -203,11 +212,10 @@ async def main() -> int:
             )
             agents.append((f"{deployment} [responses]", agent_resp, "responses"))
 
-            from azure.core.credentials import AzureKeyCredential
             client_foundry = FoundryChatClient(
                 project_endpoint=ENDPOINT,
                 model=deployment,
-                credential=AzureKeyCredential(api_key),
+                credential=credential,
             )
             agent_foundry = Agent(
                 client=client_foundry,
