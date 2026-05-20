@@ -15,7 +15,7 @@
     <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.1.0" />
     <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.4.1" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.2" />
-    <PackageReference Include="Microsoft.OpenTelemetry" Version="*-*" />
+    <PackageReference Include="Microsoft.OpenTelemetry" Version="1.0.2" />
   </ItemGroup>
 
 </Project>

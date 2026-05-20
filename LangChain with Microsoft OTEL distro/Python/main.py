@@ -142,9 +142,16 @@ def _instructions(use_tools: bool) -> str:
 
 
 def _make_azure_chat(deployment: str, api_key: str) -> AzureChatOpenAI:
+    # Workaround for upstream bug in opentelemetry-instrumentation-openai-v2==2.3b0
+    # (bundled by microsoft-opentelemetry 1.1.0): when the chat completions
+    # request omits the "model" kwarg (which AzureChatOpenAI does by default
+    # because the deployment routes via the URL), patch.py:118 raises
+    # KeyError('gen_ai.request.model'). Passing model=deployment forces the
+    # value into the payload so the instrumentor can find it.
     return AzureChatOpenAI(
         azure_endpoint=AZURE_OPENAI_ENDPOINT,
         azure_deployment=deployment,
+        model=deployment,
         api_version=AZURE_OPENAI_API_VERSION,
         api_key=api_key,
         timeout=60,
@@ -313,7 +320,6 @@ async def main() -> int:
     use_microsoft_opentelemetry(
         enable_azure_monitor=True,
         azure_monitor_connection_string=connection_string,
-        sampling_ratio=1.0,
     )
 
     # Add a tagging processor so we can filter by test.runId / test.protocol.

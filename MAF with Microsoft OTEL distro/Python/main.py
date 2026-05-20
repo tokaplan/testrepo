@@ -151,10 +151,9 @@ async def main() -> int:
     # bundled instrumentations (langchain, openai, openai_agents,
     # semantic_kernel, agent_framework, ...).
     os.environ.setdefault("OTEL_SERVICE_NAME", SERVICE_NAME)
-    use_microsoft_opentelemetry(
+    use_microsoft_opentelemetry(  # sampling_ratio kwarg removed in microsoft-opentelemetry 1.2.0 — default is always-on
         enable_azure_monitor=True,
         azure_monitor_connection_string=connection_string,
-        sampling_ratio=1.0,
     )
 
     # Flip the agent-framework-side flag that makes MAF actually emit
