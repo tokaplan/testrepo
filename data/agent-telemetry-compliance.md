@@ -101,6 +101,53 @@ Each agent runs against the same Azure Foundry / Azure OpenAI deployments and em
 | MAF Python (row 7 HTTP — post-`agent-framework-foundry` 1.5.0) | `row7-mafpy-foundry-140129` |
 | MAF .NET | `sc2-mafnet-120757` |
 
+## Multi-agent topology (Main Agent attribution gap)
+
+The single-agent matrix above tests the flat `agent + tool` pattern. To exercise the multi-agent attribution gap described in the [Main Agent spec](https://microsoft-my.sharepoint.com/:w:/p/zakima/cQokbnuPBNRCRploN7uylRnYEgUCEK5qWgdznH2MfKtu_uA0DQ), all four agents were also refactored to a **3-agent topology** that combines:
+
+1. **Agent-as-tool nesting** — `MainAgent` orchestrates a child `WeatherDataAgent` via a tool that wraps the inner agent (`weather_data_agent`). The inner agent has the raw `get_current_weather` function.
+2. **Sequential workflow siblings** — `MainAgent` and `VerifierAgent` run as siblings in a sequential workflow; the verifier sanity-checks the main agent's response.
+
+Expected topology:
+
+```
+workflow root
+├── MainAgent (invoke_agent)
+│   ├── chat
+│   ├── execute_tool weather_data_agent     ← agent-as-tool boundary
+│   │   └── WeatherDataAgent (invoke_agent) ← nested correctly
+│   │       ├── chat
+│   │       └── execute_tool get_current_weather (×N cities)
+│   └── chat (synthesize)
+└── VerifierAgent (invoke_agent)            ← SIBLING
+    └── chat
+```
+
+### Per-framework attribution findings
+
+| Distro | Main + Verifier sibling parent | WeatherData (agent-as-tool) parent | Main Agent attribution gap reproduced? |
+|---|---|---|---|
+| MAF Python | ✓ `executor.process` under `workflow.run` (workflow root) | ✓ `execute_tool weather_data_agent` (under Main) | **No** — siblings correctly attributed to the workflow root via `executor.process` parents. |
+| MAF .NET | ❌ **No parent — siblings are root spans** | ✓ `execute_tool weather_data_agent` (under Main) | **Yes** — exactly the gap the spec describes. `MainWeatherAgent` and `VerifierAgent` `invoke_agent` spans have no shared parent and no `microsoft.gen_ai.main_agent.*` attribute to bridge them. |
+| LangChain Python | ⚠ Parents are LangGraph node spans (`main`, `verify`) which descend from a common `invoke_agent LangGraph` root | ✓ Inner `invoke_agent LangGraph` nested under `tools` span (which is under the data agent's own `invoke_agent LangGraph`) | **Partial** — there *is* a common root, but all 6 `invoke_agent` spans share the generic name `"LangGraph"` (`gen_ai.agent.name` not differentiated per agent), so it is impossible to tell from the span which logical agent (Main / WeatherData / Verifier) it represents. |
+| LangChain NodeJs | n/a (no `invoke_agent` spans emitted — see rows 4–6) | n/a (no `invoke_agent` spans emitted) | **Worse** — no `invoke_agent` spans at all; the verifier and main agent are visually indistinguishable in the trace. |
+
+### Multi-agent reference run IDs
+
+| Distro | runId |
+|---|---|
+| MAF Python (3 protocols) | `ma-mafpy-103656` |
+| MAF .NET (2 protocols) | `ma-mafnet-104647` |
+| LangChain Python (3 protocols) | `ma-lcpy-105053` |
+| LangChain NodeJs (3 protocols, local run — no telemetry export) | `ma-lcnode-105341` |
+
+### Notes
+
+- **MAF Python is the gold standard for multi-agent attribution.** The `agent-framework` workflow runtime emits an outer `workflow.run` span, plus `executor.process <name>` spans per agent step, plus `invoke_agent <AgentName>` under each executor. Sibling agents are unambiguously joined to the workflow.
+- **MAF .NET reproduces the spec's attribution gap.** `AgentWorkflowBuilder.BuildSequential` + `InProcessExecution.RunStreamingAsync` invoke each agent but emit **no workflow / executor parent span**. Each agent's `invoke_agent` span is parentless. Without a `microsoft.gen_ai.main_agent.*` attribute (or a synthetic workflow root from the OTel SDK), there is no way to know that `MainWeatherAgent` and `VerifierAgent` belong to the same workflow run.
+- **LangChain Python's instrumentation under-names agents.** Every `invoke_agent` span emits `gen_ai.agent.name = "LangGraph"` regardless of which logical agent ran. The trace hierarchy is intact (so sibling attribution works), but the spans are not human-readable without inspecting tool calls in the surrounding spans.
+- **LangChain NodeJs emits no `invoke_agent` spans at all** (consistent with rows 4–6 above), so the multi-agent topology is invisible end-to-end — both the agent-as-tool boundary and the sibling workflow are unobservable.
+
 ### KQL query — chat spans missing `gen_ai.usage.*`
 
 ```kql

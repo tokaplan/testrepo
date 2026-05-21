@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using Azure.AI.OpenAI;
 using Microsoft.Agents.AI;
+using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
 using Microsoft.OpenTelemetry;
 using OpenAI;
@@ -11,26 +12,27 @@ using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 
 #pragma warning disable OPENAI001 // ResponsesClient is experimental
+#pragma warning disable MEAI001   // Microsoft.Extensions.AI experimental APIs
 
 // ---------------------------------------------------------------------------
-// WeatherChatMAF with Microsoft OpenTelemetry distro
+// WeatherChatMAF with Microsoft OpenTelemetry distro - multi-agent variant.
 //
-// Same MAF agent as the sibling WeatherChatMAF project, but its only
-// telemetry setup is Microsoft's `Microsoft.OpenTelemetry` distro, wired
-// up via `OpenTelemetrySdk.Create(otel => otel.UseMicrosoftOpenTelemetry(...))`.
-// The distro turns on its bundled Agent Framework / OpenAI / Azure OpenAI
-// activity sources by default, so there are no manual `AddSource(...)` or
-// `AddAzureMonitorTraceExporter(...)` calls in this file.
+// Topology per protocol:
+//   SequentialWorkflow
+//   ├── MainAgent (orchestrator, has weather_data_agent.AsAIFunction() tool)
+//   │   └── WeatherDataAgent (has get_current_weather raw tool)
+//   └── VerifierAgent (no tools, sanity-checks the main's report)
 // ---------------------------------------------------------------------------
 
 const string endpoint = "https://alkap-mc9jji6o-eastus2.services.ai.azure.com/api/projects/alkap-mc9jji6o-eastus2_project";
 const string azureOpenAIEndpoint = "https://alkap-mc9jji6o-eastus2.cognitiveservices.azure.com";
-string[] deploymentNames = ["deployment-gpt-5.4-mini", "deployment-gpt-4o", "deployment-gpt-4o-mini", "deployment-o4-mini", "deployment-Phi-4", "deployment-DeepSeek-R1", "deployment-Llama-3.3-70B-Instruct"];
-HashSet<string> noToolDeployments = ["deployment-Phi-4", "deployment-DeepSeek-R1"];
-HashSet<string> responsesApiDeployments = ["deployment-gpt-5.4-mini", "deployment-gpt-4o", "deployment-gpt-4o-mini", "deployment-o4-mini"];
+
+// Multi-agent topology needs tool-capable models; reduce to one cheap deployment.
+const string deployment = "deployment-gpt-5.4-mini";
 
 string runId = args.Length > 0 ? args[0] : Guid.NewGuid().ToString();
 const string ServiceName = "WeatherChatMAF-MS-Distro";
+const string GenAISourceName = "WeatherChatMAF.MSDistro";
 
 string appInsightsConnectionString =
     Environment.GetEnvironmentVariable("APPLICATIONINSIGHTS_CONNECTION_STRING")
@@ -43,16 +45,8 @@ Console.WriteLine($"Service: {ServiceName}");
 Console.WriteLine($"RunId:   {runId}");
 Console.WriteLine($"AppInsights: {appInsightsConnectionString[..60]}...");
 
-// Opt in to experimental OpenTelemetry for the OpenAI SDK so that the
-// distro's bundled OpenAI/Azure OpenAI instrumentation actually emits spans.
 AppContext.SetSwitch("OpenAI.Experimental.EnableOpenTelemetry", true);
 
-// ---------------------------------------------------------------------------
-// The SINGLE call that wires up Microsoft's OpenTelemetry distro - exporter
-// + bundled instrumentations (Agent Framework, OpenAI, Azure OpenAI, HTTP,
-// Azure SDK, ...). The trailing TestAgentProcessor adds test.agent /
-// test.runId / test.protocol attributes so this run can be filtered.
-// ---------------------------------------------------------------------------
 using var sdk = OpenTelemetrySdk.Create(otel =>
 {
     otel.ConfigureResource(r => r.AddService(ServiceName));
@@ -71,7 +65,6 @@ if (string.IsNullOrWhiteSpace(apiKey))
     return 1;
 }
 
-// ----- Build one MAF agent per deployment, sharing the same client ---
 var baseUrl = endpoint + "/openai/v1/";
 var openAIClient = new OpenAIClient(
     new System.ClientModel.ApiKeyCredential(apiKey),
@@ -79,42 +72,35 @@ var openAIClient = new OpenAIClient(
 var azureClient = new AzureOpenAIClient(
     new Uri(azureOpenAIEndpoint),
     new System.ClientModel.ApiKeyCredential(apiKey));
-var tools = new List<AITool> { AIFunctionFactory.Create(WeatherPlugin.GetCurrentWeather) };
 
-var agents = new List<(string label, AIAgent agent, string protocol)>();
+var rawWeatherTool = AIFunctionFactory.Create(WeatherPlugin.GetCurrentWeather);
 
-foreach (var deployment in deploymentNames)
+const string DataAgentInstructions =
+    "You are a weather data lookup agent. For each city the caller asks about, "
+    + "call get_current_weather exactly once and return the raw JSON results. "
+    + "Do not narrate, do not editorialize — just return the data.";
+
+const string MainAgentInstructions =
+    "You are a friendly weather assistant. When the user asks about weather, "
+    + "delegate the actual lookups to the weather_data_agent tool — call it ONCE "
+    + "with all the cities the user mentioned, then summarize the data it returns "
+    + "in a single conversational reply.";
+
+const string VerifierInstructions =
+    "You are a weather report verifier. You will be given the user's question "
+    + "and the weather assistant's reply. Check that:\n"
+    + "  1. Every city the user asked about is covered in the reply.\n"
+    + "  2. No additional cities (not asked about) appear in the reply.\n"
+    + "  3. The temperature/condition pairs are physically plausible "
+    + "(e.g. not 'Snowy' at 80°F).\n"
+    + "Reply with one line: either 'VERIFIED: <one-line summary>' "
+    + "or 'WARN: <reason>'. Do not call any tools.";
+
+(string protocol, IChatClient chat)[] protocols =
 {
-    bool useTools = !noToolDeployments.Contains(deployment);
-    string instructions = useTools
-        ? "You are a helpful weather assistant. Use the get_current_weather tool to look up weather information when asked."
-        : "You are a helpful weather assistant. Answer weather questions using your knowledge. You do not have access to tools.";
-
-    if (responsesApiDeployments.Contains(deployment))
-    {
-        // Responses API agent
-        var respClient = openAIClient.GetResponsesClient().AsIChatClient(defaultModelId: deployment);
-        AIAgent respAgent = new ChatClientAgent(respClient,
-            instructions: instructions, name: $"WeatherAgent-{deployment}-responses",
-            description: "Weather assistant", tools: tools);
-        agents.Add(($"{deployment} [responses]", new OpenTelemetryAgent(respAgent), "responses"));
-
-        // Chat Completions API agent for the same model
-        var ccClient = azureClient.GetChatClient(deployment).AsIChatClient();
-        AIAgent ccAgent = new ChatClientAgent(ccClient,
-            instructions: instructions, name: $"WeatherAgent-{deployment}-completions",
-            description: "Weather assistant", tools: tools);
-        agents.Add(($"{deployment} [completions]", new OpenTelemetryAgent(ccAgent), "completions"));
-    }
-    else
-    {
-        var ccClient = azureClient.GetChatClient(deployment).AsIChatClient();
-        AIAgent ccAgent = new ChatClientAgent(ccClient,
-            instructions: instructions, name: $"WeatherAgent-{deployment}",
-            description: "Weather assistant", tools: useTools ? tools : null);
-        agents.Add(($"{deployment} [completions]", new OpenTelemetryAgent(ccAgent), "completions"));
-    }
-}
+    ("responses",          openAIClient.GetResponsesClient().AsIChatClient(defaultModelId: deployment)),
+    ("completions",        azureClient.GetChatClient(deployment).AsIChatClient()),
+};
 
 string userPrompt = "What's the weather like in Seattle and San Francisco?";
 
@@ -122,26 +108,94 @@ Console.WriteLine();
 Console.WriteLine($"You: {userPrompt}");
 Console.WriteLine();
 
-// ----- Invoke all agents sequentially to keep the test.protocol stamp deterministic ---
-var results = new List<(string label, AgentResponse? response, Exception? error)>();
-foreach (var (label, agent, protocol) in agents)
+var results = new List<(string protocol, string? main, string? verifier, Exception? error)>();
+
+foreach (var (protocol, chatClient) in protocols)
 {
     TestAgentProcessor.SetProtocol(protocol);
     try
     {
-        AgentResponse response = await agent.RunAsync(userPrompt);
-        results.Add((label, response, null));
+        // Wrap chat client with telemetry first so the data agent's calls also emit chat spans.
+        var instrumentedChat = chatClient.AsBuilder().UseOpenTelemetry(sourceName: GenAISourceName).Build();
+
+        AIAgent rawData = new ChatClientAgent(instrumentedChat,
+            instructions: DataAgentInstructions,
+            name: $"WeatherDataAgent-{protocol}",
+            description: "Looks up weather for one or more cities via get_current_weather.",
+            tools: new List<AITool> { rawWeatherTool });
+        AIAgent dataAgent = new OpenTelemetryAgent(rawData);
+
+        AITool weatherDataTool = dataAgent.AsAIFunction(new AIFunctionFactoryOptions
+        {
+            Name = "weather_data_agent",
+            Description = "Delegate to the weather data agent. Pass the list of cities the user asked about.",
+        });
+
+        AIAgent rawMain = new ChatClientAgent(instrumentedChat,
+            instructions: MainAgentInstructions,
+            name: $"MainWeatherAgent-{protocol}",
+            description: "Friendly weather assistant that delegates lookups to a data agent.",
+            tools: new List<AITool> { weatherDataTool });
+        AIAgent mainAgent = new OpenTelemetryAgent(rawMain);
+
+        AIAgent rawVerifier = new ChatClientAgent(instrumentedChat,
+            instructions: VerifierInstructions,
+            name: $"VerifierAgent-{protocol}",
+            description: "Sanity-checks the main agent's weather report.");
+        AIAgent verifierAgent = new OpenTelemetryAgent(rawVerifier);
+
+        Workflow workflow = AgentWorkflowBuilder.BuildSequential(
+            $"WeatherWorkflow-{protocol}",
+            new[] { mainAgent, verifierAgent });
+
+        // Run the workflow with the user prompt as a single ChatMessage.
+        var inputMessages = new List<ChatMessage> { new(ChatRole.User, userPrompt) };
+        await using StreamingRun run = await InProcessExecution.RunStreamingAsync(workflow, inputMessages);
+        await run.TrySendMessageAsync(new TurnToken(emitEvents: true));
+
+        // Accumulate streaming text per executor (order: main, then verifier).
+        var perExecutorText = new Dictionary<string, System.Text.StringBuilder>();
+        var executorOrder = new List<string>();
+        await foreach (var evt in run.WatchStreamAsync())
+        {
+            if (evt is AgentResponseUpdateEvent upd)
+            {
+                if (!perExecutorText.ContainsKey(upd.ExecutorId))
+                {
+                    perExecutorText[upd.ExecutorId] = new System.Text.StringBuilder();
+                    executorOrder.Add(upd.ExecutorId);
+                }
+                if (!string.IsNullOrEmpty(upd.Update.Text))
+                    perExecutorText[upd.ExecutorId].Append(upd.Update.Text);
+            }
+            else if (evt is WorkflowOutputEvent)
+            {
+                // Sequential workflow completed - final messages available
+            }
+            else if (evt is ExecutorFailedEvent fail)
+            {
+                Console.Error.WriteLine($"  [failed] {fail.ExecutorId}: {fail.Data}");
+            }
+            else if (evt is WorkflowErrorEvent werr)
+            {
+                Console.Error.WriteLine($"  [werror] {werr.Exception}");
+            }
+        }
+
+        string? mainText = executorOrder.Count > 0 ? perExecutorText[executorOrder[0]].ToString() : null;
+        string? verifierText = executorOrder.Count > 1 ? perExecutorText[executorOrder[1]].ToString() : null;
+        results.Add((protocol, mainText, verifierText, null));
     }
     catch (Exception ex)
     {
-        results.Add((label, null, ex));
+        results.Add((protocol, null, null, ex));
     }
 }
 
 int successes = 0;
-foreach (var (deployment, response, error) in results)
+foreach (var (protocol, mainText, verifierText, error) in results)
 {
-    Console.WriteLine($"--- [{deployment}] ---");
+    Console.WriteLine($"--- [{protocol}] ---");
     if (error is not null)
     {
         Console.Error.WriteLine($"  Error: {error.Message}");
@@ -149,20 +203,15 @@ foreach (var (deployment, response, error) in results)
     }
     successes++;
 
-    foreach (var message in response!.Messages)
-    {
-        if (message.Role == ChatRole.Assistant && !string.IsNullOrWhiteSpace(message.Text))
-        {
-            Console.WriteLine($"  Assistant: {message.Text}");
-        }
-    }
+    if (!string.IsNullOrWhiteSpace(mainText))
+        Console.WriteLine($"  Assistant: {mainText}");
+    if (!string.IsNullOrWhiteSpace(verifierText))
+        Console.WriteLine($"  Verifier:  {verifierText}");
     Console.WriteLine();
 }
 
 Console.WriteLine();
-Console.WriteLine($"[run] {successes}/{results.Count} agents succeeded");
-// `using var sdk = ...` will dispose at the end of Main, which flushes
-// pending telemetry per the distro's contract.
+Console.WriteLine($"[run] {successes}/{results.Count} workflows succeeded");
 return 0;
 
 // ---------------------------------------------------------------------------
