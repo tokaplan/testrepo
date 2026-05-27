@@ -27,8 +27,12 @@ using OpenTelemetry.Trace;
 const string endpoint = "https://alkap-mc9jji6o-eastus2.services.ai.azure.com/api/projects/alkap-mc9jji6o-eastus2_project";
 const string azureOpenAIEndpoint = "https://alkap-mc9jji6o-eastus2.cognitiveservices.azure.com";
 
-// Multi-agent topology needs tool-capable models; reduce to one cheap deployment.
-const string deployment = "deployment-gpt-5.4-mini";
+// Multi-agent topology: assign a different deployment to each agent role so
+// a single workflow run produces telemetry from multiple models. Each agent's
+// chat spans carry their own gen_ai.request.model / gen_ai.response.model.
+const string dataDeployment     = "deployment-gpt-4o-mini";   // tool-caller
+const string mainDeployment     = "deployment-gpt-5.4-mini";  // orchestrator
+const string verifierDeployment = "deployment-o4-mini";       // reasoning judge
 
 string runId = args.Length > 0 ? args[0] : Guid.NewGuid().ToString();
 const string ServiceName = "WeatherChatMAF-MS-Distro";
@@ -96,29 +100,34 @@ const string VerifierInstructions =
     + "Reply with one line: either 'VERIFIED: <one-line summary>' "
     + "or 'WARN: <reason>'. Do not call any tools.";
 
-(string protocol, IChatClient chat)[] protocols =
+// For each protocol, provide a factory that returns an IChatClient for a given deployment.
+(string protocol, Func<string, IChatClient> makeClient)[] protocols =
 {
-    ("responses",          openAIClient.GetResponsesClient().AsIChatClient(defaultModelId: deployment)),
-    ("completions",        azureClient.GetChatClient(deployment).AsIChatClient()),
+    ("responses",   dep => openAIClient.GetResponsesClient().AsIChatClient(defaultModelId: dep)),
+    ("completions", dep => azureClient.GetChatClient(dep).AsIChatClient()),
 };
 
 string userPrompt = "What's the weather like in Seattle and San Francisco?";
 
 Console.WriteLine();
 Console.WriteLine($"You: {userPrompt}");
+Console.WriteLine($"Agent deployments: data={dataDeployment}, main={mainDeployment}, verifier={verifierDeployment}");
 Console.WriteLine();
 
 var results = new List<(string protocol, string? main, string? verifier, Exception? error)>();
 
-foreach (var (protocol, chatClient) in protocols)
+foreach (var (protocol, makeClient) in protocols)
 {
     TestAgentProcessor.SetProtocol(protocol);
     try
     {
-        // Wrap chat client with telemetry first so the data agent's calls also emit chat spans.
-        var instrumentedChat = chatClient.AsBuilder().UseOpenTelemetry(sourceName: GenAISourceName).Build();
+        // Build a fresh chat client per agent role, each wrapped with telemetry so the
+        // emitted gen_ai.request.model / gen_ai.response.model reflect the per-agent model.
+        IChatClient dataChat     = makeClient(dataDeployment).AsBuilder().UseOpenTelemetry(sourceName: GenAISourceName).Build();
+        IChatClient mainChat     = makeClient(mainDeployment).AsBuilder().UseOpenTelemetry(sourceName: GenAISourceName).Build();
+        IChatClient verifierChat = makeClient(verifierDeployment).AsBuilder().UseOpenTelemetry(sourceName: GenAISourceName).Build();
 
-        AIAgent rawData = new ChatClientAgent(instrumentedChat,
+        AIAgent rawData = new ChatClientAgent(dataChat,
             instructions: DataAgentInstructions,
             name: $"WeatherDataAgent-{protocol}",
             description: "Looks up weather for one or more cities via get_current_weather.",
@@ -131,14 +140,14 @@ foreach (var (protocol, chatClient) in protocols)
             Description = "Delegate to the weather data agent. Pass the list of cities the user asked about.",
         });
 
-        AIAgent rawMain = new ChatClientAgent(instrumentedChat,
+        AIAgent rawMain = new ChatClientAgent(mainChat,
             instructions: MainAgentInstructions,
             name: $"MainWeatherAgent-{protocol}",
             description: "Friendly weather assistant that delegates lookups to a data agent.",
             tools: new List<AITool> { weatherDataTool });
         AIAgent mainAgent = new OpenTelemetryAgent(rawMain);
 
-        AIAgent rawVerifier = new ChatClientAgent(instrumentedChat,
+        AIAgent rawVerifier = new ChatClientAgent(verifierChat,
             instructions: VerifierInstructions,
             name: $"VerifierAgent-{protocol}",
             description: "Sanity-checks the main agent's weather report.");

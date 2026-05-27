@@ -52,9 +52,14 @@ ENDPOINT = "https://alkap-mc9jji6o-eastus2.services.ai.azure.com/api/projects/al
 BASE_URL = ENDPOINT + "/openai/v1/"
 AZURE_OPENAI_ENDPOINT = "https://alkap-mc9jji6o-eastus2.cognitiveservices.azure.com"
 
-# Multi-agent topology needs tool-capable models, so we reduce to one cheap
-# deployment that supports all three protocols (responses / foundry / completions).
-DEPLOYMENT = os.environ.get("DEPLOYMENT", "deployment-gpt-5.4-mini")
+# Multi-agent topology: assign a different deployment to each agent role so a
+# single workflow run produces telemetry from multiple models. Each agent's
+# chat spans carry their own gen_ai.request.model / gen_ai.response.model.
+AGENT_DEPLOYMENTS = {
+    "data":     "deployment-gpt-4o-mini",   # tool-caller (cheap, supports tools)
+    "main":     "deployment-gpt-5.4-mini",  # orchestrator (smart, supports tools)
+    "verifier": "deployment-o4-mini",       # reasoning judge (no tools)
+}
 
 SERVICE_NAME = "WeatherChatMAFPython-MS-Distro"
 
@@ -82,7 +87,6 @@ class TestAgentSpanProcessor(BaseSpanProcessor):
     def on_start(self, span, parent_context=None):
         span.set_attribute("test.agent", self._agent_name)
         span.set_attribute("test.runId", self._run_id)
-        span.set_attribute("test.deployment", DEPLOYMENT)
         protocol = self._protocol_ctx.get("")
         if protocol:
             span.set_attribute("test.protocol", protocol)
@@ -155,11 +159,15 @@ VERIFIER_INSTRUCTIONS = (
 )
 
 
-def build_workflow(chat_client, protocol_tag: str):
-    """Build a {data → main} + {main → verifier} workflow for one chat client."""
+def build_workflow(data_client, main_client, verifier_client, protocol_tag: str):
+    """Build a {data → main} + {main → verifier} workflow.
+
+    Each of the three agents takes its own chat client so that a single
+    workflow run produces telemetry from up to 3 distinct deployments.
+    """
 
     weather_data_agent = Agent(
-        client=chat_client,
+        client=data_client,
         name=f"WeatherDataAgent-{protocol_tag}",
         description="Looks up weather for one or more cities via get_current_weather.",
         instructions=DATA_AGENT_INSTRUCTIONS,
@@ -174,7 +182,7 @@ def build_workflow(chat_client, protocol_tag: str):
     )
 
     main_agent = Agent(
-        client=chat_client,
+        client=main_client,
         name=f"MainWeatherAgent-{protocol_tag}",
         description="Friendly weather assistant that delegates lookups to a data agent.",
         instructions=MAIN_AGENT_INSTRUCTIONS,
@@ -182,7 +190,7 @@ def build_workflow(chat_client, protocol_tag: str):
     )
 
     verifier_agent = Agent(
-        client=chat_client,
+        client=verifier_client,
         name=f"VerifierAgent-{protocol_tag}",
         description="Sanity-checks the main agent's weather report.",
         instructions=VERIFIER_INSTRUCTIONS,
@@ -237,47 +245,64 @@ async def main() -> int:
         return 1
     credential = DefaultAzureCredential()
 
-    # -- Build chat clients per protocol -----------------------------------
-    client_responses = OpenAIChatClient(
-        model=DEPLOYMENT,
-        base_url=BASE_URL,
-        api_key=api_key,
-        default_headers={"api-key": api_key},
-    )
-    client_foundry = FoundryChatClient(
-        project_endpoint=ENDPOINT,
-        model=DEPLOYMENT,
-        credential=credential,
-    )
-    client_completions = OpenAIChatCompletionClient(
-        model=DEPLOYMENT,
-        azure_endpoint=AZURE_OPENAI_ENDPOINT,
-        api_key=api_key,
-    )
+    # -- Build a chat client per (protocol, agent role) so each agent uses
+    # -- its assigned deployment. This lets a single run emit telemetry from
+    # -- three distinct models across each protocol.
+    def make_clients(protocol: str) -> dict:
+        clients = {}
+        for role, deployment in AGENT_DEPLOYMENTS.items():
+            if protocol == "responses":
+                clients[role] = OpenAIChatClient(
+                    model=deployment,
+                    base_url=BASE_URL,
+                    api_key=api_key,
+                    default_headers={"api-key": api_key},
+                )
+            elif protocol == "RAPI via foundry":
+                clients[role] = FoundryChatClient(
+                    project_endpoint=ENDPOINT,
+                    model=deployment,
+                    credential=credential,
+                )
+            elif protocol == "completions":
+                clients[role] = OpenAIChatCompletionClient(
+                    model=deployment,
+                    azure_endpoint=AZURE_OPENAI_ENDPOINT,
+                    api_key=api_key,
+                )
+            else:
+                raise ValueError(f"Unknown protocol: {protocol}")
+        return clients
 
     workflows = [
-        ("responses", client_responses),
-        ("RAPI via foundry", client_foundry),
-        ("completions", client_completions),
+        ("responses", make_clients("responses")),
+        ("RAPI via foundry", make_clients("RAPI via foundry")),
+        ("completions", make_clients("completions")),
     ]
 
     user_prompt = "What's the weather like in Seattle and San Francisco?"
     print()
     print(f"You: {user_prompt}")
+    print(f"Agent deployments: {AGENT_DEPLOYMENTS}")
     print()
 
-    async def run_workflow(protocol: str, chat_client):
+    async def run_workflow(protocol: str, clients: dict):
         test_processor.set_protocol(protocol)
         protocol_tag = protocol.replace(" ", "-").replace("/", "-")
         try:
-            workflow, main_id, verifier_id = build_workflow(chat_client, protocol_tag)
+            workflow, main_id, verifier_id = build_workflow(
+                data_client=clients["data"],
+                main_client=clients["main"],
+                verifier_client=clients["verifier"],
+                protocol_tag=protocol_tag,
+            )
             result = await workflow.run(user_prompt)
             return (protocol, result, main_id, verifier_id, None)
         except Exception as ex:
             return (protocol, None, None, None, ex)
 
     results = await asyncio.gather(
-        *(run_workflow(proto, client) for proto, client in workflows)
+        *(run_workflow(proto, clients) for proto, clients in workflows)
     )
 
     successes = 0

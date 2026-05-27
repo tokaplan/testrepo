@@ -16,7 +16,7 @@
     <PackageReference Include="Microsoft.Agents.AI.Workflows" Version="1.7.0" />
     <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.6.0" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.2" />
-    <PackageReference Include="Microsoft.OpenTelemetry" Version="1.0.2" />
+    <PackageReference Include="Microsoft.OpenTelemetry" Version="1.0.3" />
   </ItemGroup>
 
 </Project>
