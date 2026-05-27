@@ -49,7 +49,12 @@ Console.WriteLine($"Service: {ServiceName}");
 Console.WriteLine($"RunId:   {runId}");
 Console.WriteLine($"AppInsights: {appInsightsConnectionString[..60]}...");
 
-AppContext.SetSwitch("OpenAI.Experimental.EnableOpenTelemetry", true);
+// NOTE: We intentionally do NOT enable the OpenAI SDK experimental telemetry switch
+// (AppContext.SetSwitch("OpenAI.Experimental.EnableOpenTelemetry", true)) because
+// Microsoft.Extensions.AI's `UseOpenTelemetry(...)` wrapper already emits gen_ai chat
+// spans for both streaming and non-streaming calls. Enabling the OpenAI SDK switch
+// would produce duplicate chat spans for non-streaming calls (which is the only path
+// the OpenAI SDK currently instruments).
 
 using var sdk = OpenTelemetrySdk.Create(otel =>
 {
@@ -59,7 +64,9 @@ using var sdk = OpenTelemetrySdk.Create(otel =>
         o.Exporters = ExportTarget.AzureMonitor;
         o.AzureMonitor.ConnectionString = appInsightsConnectionString;
     });
-    otel.WithTracing(b => b.AddProcessor(new TestAgentProcessor(ServiceName, runId)));
+    otel.WithTracing(b => b
+        .AddSource(GenAISourceName)
+        .AddProcessor(new TestAgentProcessor(ServiceName, runId)));
 });
 
 string? apiKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY");
