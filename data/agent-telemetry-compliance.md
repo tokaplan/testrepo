@@ -4,7 +4,7 @@ Compliance of the four sample weather agents (LangChain Python, LangChain NodeJs
 
 ## Score
 
-🟢 **7** · 🟡 **1** · 🔴 **3**
+🟢 **7** · 🟡 **3** · 🔴 **1**
 
 ## Streaming coverage
 
@@ -32,9 +32,9 @@ Only MAF .NET surfaces a `gen_ai.request.stream=true` (and `gen_ai.response.time
 
 | Span type | Missing on |
 |---|---|
-| `chat` | _(none — Row 11 fixed by commit `d5cae2e`)_ |
-| `invoke_agent` | Rows 4, 5, 6 (all LangChain NodeJs) |
-| `execute_tool` | none |
+| `chat` | Row 6 (LangChain NodeJs `useResponsesApi`) — only the Verifier (direct `chat.invoke`) emits a chat span; sub-agent calls made through `createReactAgent` produce no chat spans when the underlying client uses `useResponsesApi: true` |
+| `invoke_agent` | Row 6 only (Rows 4, 5 gained `invoke_agent` via multi-agent refactor — see commit `29be769`) |
+| `execute_tool` | Row 6 (intermittent — `weather_data_agent` tool span is sometimes lost under `useResponsesApi`) |
 | `HTTP` (actual API POST) | Rows 4, 5, 6 (LangChain NodeJs — no HTTP instrumentation) |
 
 ## Full matrix
@@ -44,9 +44,9 @@ Only MAF .NET surfaces a `gen_ai.request.stream=true` (and `gen_ai.response.time
 | 1 | LangChain Python | `AzureChatOpenAI` | Azure CAPI | 🟢 | OK | OK | OK | OK | **chat:** `gen_ai.provider.name` 🔴 non-spec `"azure"`; `gen_ai.request.choice.count` 🟡 Missing<br>**invoke_agent:** `gen_ai.provider.name` 🔴 non-spec `"azure"`; `gen_ai.agent.name`/`id`/`description` 🟠 Missing; `gen_ai.conversation.id` 🟠 Missing |
 | 2 | LangChain Python | `ChatOpenAI` | Foundry CAPI | 🟢 | OK | OK | OK | OK | **chat:** `gen_ai.request.choice.count` 🟡 Missing<br>**invoke_agent:** `gen_ai.agent.name`/`id`/`description` 🟠 Missing; `gen_ai.conversation.id` 🟠 Missing |
 | 3 | LangChain Python | `ChatOpenAI` (`useResponsesApi`) | Foundry RAPI | 🟡 | OK | OK | OK | OK | **chat:** `gen_ai.usage.input_tokens` 🟡 Missing; `gen_ai.usage.output_tokens` 🟡 Missing; `gen_ai.request.choice.count` 🟡 Missing<br>**invoke_agent:** `gen_ai.agent.name`/`id`/`description` 🟠 Missing; `gen_ai.conversation.id` 🟠 Missing |
-| 4 | LangChain NodeJs | `AzureChatOpenAI` | Azure CAPI | 🔴 | OK | **Missing** | OK | **Missing** | **chat:** `gen_ai.provider.name` 🔴 split `"azure"`/`"openai"` (dual instrumentation); `gen_ai.response.id` 🟡 Missing; `gen_ai.response.model` 🟡 Missing; `gen_ai.response.finish_reasons` 🟡 Missing; `gen_ai.request.choice.count` 🟡 Missing<br>**invoke_agent:** 🔴 span entirely absent<br>**execute_tool:** `gen_ai.tool.description` 🟡 Missing |
-| 5 | LangChain NodeJs | `ChatOpenAI` | Foundry CAPI | 🔴 | OK | **Missing** | OK | **Missing** | **chat:** `gen_ai.response.id` 🟡 Missing; `gen_ai.response.model` 🟡 Missing; `gen_ai.response.finish_reasons` 🟡 Missing; `gen_ai.request.choice.count` 🟡 Missing<br>**invoke_agent:** 🔴 span entirely absent<br>**execute_tool:** `gen_ai.tool.description` 🟡 Missing |
-| 6 | LangChain NodeJs | `ChatOpenAI` (`useResponsesApi`) | Foundry RAPI | 🔴 | OK | **Missing** | OK | **Missing** | **chat:** `gen_ai.response.id` 🟡 Missing; `gen_ai.response.model` 🟡 Missing; `gen_ai.response.finish_reasons` 🟡 Missing; `gen_ai.request.choice.count` 🟡 Missing<br>**invoke_agent:** 🔴 span entirely absent<br>**execute_tool:** `gen_ai.tool.description` 🟡 Missing |
+| 4 | LangChain NodeJs | `AzureChatOpenAI` | Azure CAPI | 🟡 | OK | OK | OK | **Missing** | **chat:** `gen_ai.provider.name` 🔴 split `"azure"`/`"openai"` (dual instrumentation); `gen_ai.request.model` 🟡 reports default `"gpt-3.5-turbo"` instead of deployment name (Azure SDK omits `model` from body, so OTel falls back to the SDK default); `gen_ai.response.id` 🟡 Missing; `gen_ai.response.model` 🟡 Missing; `gen_ai.response.finish_reasons` 🟡 Missing; `gen_ai.request.choice.count` 🟡 Missing<br>**invoke_agent:** ✅ now emitted via `createReactAgent` after the multi-agent refactor (`29be769`); `gen_ai.agent.name`/`id`/`description` 🟠 Missing; `gen_ai.conversation.id` 🟠 Missing<br>**execute_tool:** `gen_ai.tool.description` 🟡 Missing |
+| 5 | LangChain NodeJs | `ChatOpenAI` | Foundry CAPI | 🟡 | OK | OK | OK | **Missing** | **chat:** `gen_ai.response.id` 🟡 Missing; `gen_ai.response.model` 🟡 Missing; `gen_ai.response.finish_reasons` 🟡 Missing; `gen_ai.request.choice.count` 🟡 Missing<br>**invoke_agent:** ✅ now emitted via `createReactAgent` after the multi-agent refactor (`29be769`); `gen_ai.agent.name`/`id`/`description` 🟠 Missing; `gen_ai.conversation.id` 🟠 Missing<br>**execute_tool:** `gen_ai.tool.description` 🟡 Missing |
+| 6 | LangChain NodeJs | `ChatOpenAI` (`useResponsesApi`) | Foundry RAPI | 🔴 | **Partial** | **Missing** | **Partial** | **Missing** | **chat:** 🔴 only the Verifier (direct `chat.invoke`) emits a chat span; the 4 sub-agent calls inside `createReactAgent` (Main planning, Main synthesis, Data ×2) produce no chat spans at all when `useResponsesApi: true` — LangChain JS instrumentation does not hook the Responses-API path inside `createReactAgent`. Same `gen_ai.response.*` / `choice.count` gaps as rows 4/5.<br>**invoke_agent:** 🔴 span entirely absent (Responses-API + `createReactAgent` combination)<br>**execute_tool:** `weather_data_agent` tool span intermittently lost; `get_current_weather` never emitted (inner data agent's tool call is silent); `gen_ai.tool.description` 🟡 Missing |
 | 7 | MAF Python | `FoundryChatClient` | Foundry RAPI | 🟢 | OK | OK | OK | OK | **chat:** `gen_ai.provider.name` 🔴 non-spec `"azure.ai.foundry"` (Required → `azure.ai.inference`); `gen_ai.response.finish_reasons` 🟡 Missing; `gen_ai.conversation.id` 🟠 partial<br>**invoke_agent:** `gen_ai.provider.name` 🔴 non-spec `"microsoft.agent_framework"`; `gen_ai.agent.description` 🟡 Missing; `gen_ai.conversation.id` 🟠 Missing |
 | 8 | MAF Python | `OpenAIChatClient` | Foundry RAPI (responses) | 🟢 | OK | OK | OK | OK | **chat:** `gen_ai.response.finish_reasons` 🟡 Missing; `gen_ai.conversation.id` 🟠 partial<br>**invoke_agent:** `gen_ai.provider.name` 🔴 non-spec `"microsoft.agent_framework"`; `gen_ai.agent.description` 🟡 Missing; `gen_ai.conversation.id` 🟠 Missing |
 | 9 | MAF Python | `OpenAIChatCompletionClient` | Azure CAPI | 🟢 | OK | OK | OK | OK | **chat:** `gen_ai.conversation.id` 🟠 Missing _(no other row-specific gaps)_<br>**invoke_agent:** `gen_ai.provider.name` 🔴 non-spec `"microsoft.agent_framework"`; `gen_ai.agent.description` 🟡 Missing; `gen_ai.conversation.id` 🟠 Missing |
