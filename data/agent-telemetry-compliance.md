@@ -61,10 +61,10 @@ Only MAF .NET surfaces a `gen_ai.request.stream=true` (and `gen_ai.response.time
 
 | # | Distro | Client class | Endpoint | Status | execute_tool | invoke_agent | chat | HTTP | Missing / incorrect attributes |
 |:-:|---|---|---|:-:|:-:|:-:|:-:|:-:|---|
-| 1 | LangChain Python | `AzureChatOpenAI` | Azure CAPI | 🟢 | OK | OK | OK | OK | **chat:** `gen_ai.provider.name` 🔴 non-spec `"azure"`; `gen_ai.request.choice.count` 🟡 Missing<br>**invoke_agent:** `gen_ai.provider.name` 🔴 non-spec `"azure"`; `gen_ai.agent.name`/`id`/`description` 🟠 Missing; `gen_ai.conversation.id` 🟠 Missing |
-| 2 | LangChain Python | `ChatOpenAI` | Foundry CAPI | 🟢 | OK | OK | OK | OK | **chat:** `gen_ai.request.choice.count` 🟡 Missing<br>**invoke_agent:** `gen_ai.agent.name`/`id`/`description` 🟠 Missing; `gen_ai.conversation.id` 🟠 Missing |
-| 3 | LangChain Python | `ChatOpenAI` (`useResponsesApi`) | Foundry RAPI | 🟡 | OK | OK | OK | OK | **chat:** `gen_ai.response.model` 🟡 reports deployment alias (e.g. `deployment-gpt-5.4-mini`) instead of the served model snapshot (e.g. `gpt-5.4-mini-2026-03-17`) — Foundry returns the snapshot only in the `x-ms-served-model` response header, and `openai-python` does not surface it to the consumer; `gen_ai.usage.input_tokens` 🟡 Missing; `gen_ai.usage.output_tokens` 🟡 Missing; `gen_ai.request.choice.count` 🟡 Missing<br>**invoke_agent:** `gen_ai.agent.name`/`id`/`description` 🟠 Missing; `gen_ai.conversation.id` 🟠 Missing |
-| 4 | LangChain NodeJs | `AzureChatOpenAI` | Azure CAPI | 🟡 | OK | OK | OK | **Missing** | **chat:** `gen_ai.provider.name` 🔴 split `"azure"`/`"openai"` (dual instrumentation); `gen_ai.request.model` 🟡 reports default `"gpt-3.5-turbo"` instead of deployment name (Azure SDK omits `model` from body, so OTel falls back to the SDK default); `gen_ai.response.id` 🟡 Missing; `gen_ai.response.model` 🟡 Missing; `gen_ai.response.finish_reasons` 🟡 Missing; `gen_ai.request.choice.count` 🟡 Missing<br>**invoke_agent:** ✅ now emitted via `createReactAgent` after the multi-agent refactor (`29be769`); `gen_ai.agent.name`/`id`/`description` 🟠 Missing; `gen_ai.conversation.id` 🟠 Missing<br>**execute_tool:** `gen_ai.tool.description` 🟡 Missing |
+| 1 | LangChain Python | `AzureChatOpenAI` | Azure CAPI | 🟢 | OK | OK | OK | OK | **chat:** `gen_ai.provider.name` 🔴 non-spec `"azure"`<br>**invoke_agent:** `gen_ai.provider.name` 🔴 non-spec `"azure"`; `gen_ai.agent.name`/`id`/`description` 🟠 Missing; `gen_ai.conversation.id` 🟠 Missing |
+| 2 | LangChain Python | `ChatOpenAI` | Foundry CAPI | 🟢 | OK | OK | OK | OK | **chat:** _(no row-specific gaps beyond the universal set)_<br>**invoke_agent:** `gen_ai.agent.name`/`id`/`description` 🟠 Missing; `gen_ai.conversation.id` 🟠 Missing |
+| 3 | LangChain Python | `ChatOpenAI` (`useResponsesApi`) | Foundry RAPI | 🟡 | OK | OK | OK | OK | **chat:** `gen_ai.response.model` 🟡 reports deployment alias (e.g. `deployment-gpt-5.4-mini`) instead of the served model snapshot (e.g. `gpt-5.4-mini-2026-03-17`) — Foundry returns the snapshot only in the `x-ms-served-model` response header, and `openai-python` does not surface it to the consumer<br>**invoke_agent:** `gen_ai.agent.name`/`id`/`description` 🟠 Missing; `gen_ai.conversation.id` 🟠 Missing |
+| 4 | LangChain NodeJs | `AzureChatOpenAI` | Azure CAPI | 🟡 | OK | OK | OK | **Missing** | **chat:** `gen_ai.provider.name` 🔴 split `"azure"`/`"openai"` (dual instrumentation); `gen_ai.response.id` 🟡 Missing; `gen_ai.response.model` 🟡 Missing; `gen_ai.response.finish_reasons` 🟡 Missing; `gen_ai.request.choice.count` 🟡 Missing<br>**invoke_agent:** ✅ now emitted via `createReactAgent` after the multi-agent refactor (`29be769`); `gen_ai.agent.name`/`id`/`description` 🟠 Missing; `gen_ai.conversation.id` 🟠 Missing<br>**execute_tool:** `gen_ai.tool.description` 🟡 Missing |
 | 5 | LangChain NodeJs | `ChatOpenAI` | Foundry CAPI | 🟡 | OK | OK | OK | **Missing** | **chat:** `gen_ai.response.id` 🟡 Missing; `gen_ai.response.model` 🟡 Missing; `gen_ai.response.finish_reasons` 🟡 Missing; `gen_ai.request.choice.count` 🟡 Missing<br>**invoke_agent:** ✅ now emitted via `createReactAgent` after the multi-agent refactor (`29be769`); `gen_ai.agent.name`/`id`/`description` 🟠 Missing; `gen_ai.conversation.id` 🟠 Missing<br>**execute_tool:** `gen_ai.tool.description` 🟡 Missing |
 | 6 | LangChain NodeJs | `ChatOpenAI` (`useResponsesApi`) | Foundry RAPI | 🔴 | **Partial** | **Missing** | **Partial** | **Missing** | **chat:** 🔴 only the Verifier (direct `chat.invoke`) emits a chat span; the 4 sub-agent calls inside `createReactAgent` (Main planning, Main synthesis, Data ×2) produce no chat spans at all when `useResponsesApi: true` — LangChain JS instrumentation does not hook the Responses-API path inside `createReactAgent`. Same `gen_ai.response.*` / `choice.count` gaps as rows 4/5.<br>**invoke_agent:** 🔴 span entirely absent (Responses-API + `createReactAgent` combination)<br>**execute_tool:** `weather_data_agent` tool span intermittently lost; `get_current_weather` never emitted (inner data agent's tool call is silent); `gen_ai.tool.description` 🟡 Missing |
 | 7 | MAF Python | `FoundryChatClient` | Foundry RAPI | 🟢 | OK | OK | OK | OK | **chat:** `gen_ai.provider.name` 🔴 non-spec `"azure.ai.foundry"` (Required → `azure.ai.inference`); `gen_ai.response.finish_reasons` 🟡 Missing; `gen_ai.conversation.id` 🟠 partial<br>**invoke_agent:** `gen_ai.provider.name` 🔴 non-spec `"microsoft.agent_framework"`; `gen_ai.agent.description` 🟡 Missing; `gen_ai.conversation.id` 🟠 Missing |
@@ -101,7 +101,7 @@ Note: Conditional attrs `server.port` and `gen_ai.output.type` are correctly omi
 - **Row 9** (MAF Py Azure CAPI) is the only chat span with **no row-specific Required/Recommended gaps** beyond the universal set. A prior duplicate-span regression on this row was fixed by upgrading `microsoft-opentelemetry` from `1.1.0` to **`1.2.0`** (which suppresses a duplicate registration of `opentelemetry-instrumentation-openai-v2`).
 - **Row 10** (MAF .NET Azure CAPI) used to emit the deprecated `gen_ai.system="openai"` attribute instead of the renamed Required `gen_ai.provider.name`. **Fixed in commit `d5cae2e`** by registering the custom `ActivitySource` with the TracerProvider and removing the `OpenAI.Experimental.EnableOpenTelemetry` AppContext switch — `Microsoft.Extensions.AI.OpenTelemetryChatClient` now emits the spans with the new `gen_ai.provider.name="openai"`.
 - **Row 11** (MAF .NET Responses) used to emit no chat span at all on the Responses-API code path. **Fixed in commit `d5cae2e`** — `Microsoft.Extensions.AI.OpenTelemetryChatClient` instruments both the Chat Completions and Responses API code paths, and registering the custom `ActivitySource` made every previously-dropped chat span (streaming + non-streaming, completions + responses) visible. Remaining minor gap: `gen_ai.response.finish_reasons` is empty on streaming chat spans (M.E.AI streaming TraceResponse does not surface the finish reason yet).
-- **`gen_ai.request.choice.count`** is emitted only by MAF Python (30/30 chat spans). All other distros miss it (0/89).
+- **`gen_ai.request.choice.count`** is emitted by MAF Python (30/30 chat spans) and LangChain Python (15/15 chat spans across rows 1–3, after `langchain` 1.x and `microsoft-opentelemetry` 1.3.0). LangChain NodeJs and MAF .NET still omit it.
 - **`gen_ai.agent.description`** is emitted only by MAF .NET (11/11 invoke_agent spans). Python frameworks miss it on every invoke_agent span.
 - **`gen_ai.agent.version`** and **`gen_ai.conversation.id`** are missing on every single invoke_agent span (43/43) across all 4 distros.
 - **Provider-name capitalization**: MAF Python invoke_agent spans emit lowercase `"microsoft.agent_framework"` (not `"Microsoft.agent_framework"`).
@@ -112,11 +112,10 @@ Note: Conditional attrs `server.port` and `gen_ai.output.type` are correctly omi
 |---|---|
 | `gen_ai.provider.name` Required-but-wrong-value | 1 (`"azure"`), 4 (split), 7 (`"azure.ai.foundry"`) |
 | Required span entirely absent | 4–6 (invoke_agent) |
-| `gen_ai.usage.{input,output}_tokens` missing on chat | 3 |
 | `gen_ai.response.{id,model,finish_reasons}` missing on chat | 4, 5, 6 |
 | `gen_ai.response.model` missing on streaming chat only | 10 |
 | `gen_ai.response.finish_reasons` missing on streaming chat only | 11 |
-| `gen_ai.request.choice.count` missing on chat | 1–6, 10, 11 |
+| `gen_ai.request.choice.count` missing on chat | 4, 5, 6, 10, 11 |
 | `gen_ai.conversation.id` missing on invoke_agent | all (1–11) |
 | `gen_ai.agent.description` missing on invoke_agent | 1–9 |
 | HTTP client spans missing | 4–6 |
@@ -130,12 +129,17 @@ Each agent runs against the same Azure Foundry / Azure OpenAI deployments and em
 | Distro | Package | Version |
 |---|---|---|
 | LangChain Python | `microsoft-opentelemetry` | `1.3.0` |
+| LangChain Python | `langchain`, `langchain-core`, `langchain-openai` | `1.3.2`, `1.4.0`, `1.2.2` |
 | LangChain NodeJs | `@microsoft/opentelemetry` | `1.0.2` |
 | MAF Python | `microsoft-opentelemetry` | `1.3.0` |
 | MAF Python | `agent-framework`, `agent-framework-core`, `agent-framework-foundry`, `agent-framework-openai` | `1.6.0` |
 | MAF .NET | `Microsoft.Agents.AI`, `Microsoft.Agents.AI.OpenAI`, `Microsoft.Agents.AI.Workflows` | `1.7.0` |
 | MAF .NET | `Microsoft.Extensions.AI.OpenAI` | `10.6.0` |
 | MAF .NET | `Microsoft.OpenTelemetry` | `1.0.3` |
+
+### Reproducibility note: `SEQUENTIAL=1` for the Python agents
+
+The MAF Python and LangChain Python `main.py` scripts default to running the per-protocol workflows in parallel via `asyncio.gather`. Under parallel execution, both the langchain instrumentor and `agent_framework`'s span processor non-deterministically drop chat / `invoke_agent` / `execute_tool` spans (the workflows themselves still succeed). **All matrix validation runs must be executed with `SEQUENTIAL=1` set** so each protocol's workflow runs to completion before the next starts — this captures the full span set. The LangChain NodeJs `main.js` also supports `SEQUENTIAL=1` for the same reason. The MAF .NET program is single-protocol-per-run by construction and needs no knob.
 
 ### Resolved issue: `gen_ai.response.model` on RAPI returned deployment alias
 
