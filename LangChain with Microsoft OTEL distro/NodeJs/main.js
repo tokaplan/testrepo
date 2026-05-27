@@ -1,11 +1,18 @@
 /**
- * LangChainNodeJs with Microsoft OpenTelemetry distro.
+ * LangChainNodeJs with Microsoft OpenTelemetry distro - multi-agent topology
+ * (agent-as-tool + sequential workflow) mirroring the LangChain Python agent.
  *
- * Same agent as the sibling LangChainNodeJs project, but its only telemetry
- * setup is Microsoft's `@microsoft/opentelemetry` distro, loaded via
- * `node --import ./telemetry.mjs main.js`. No instrumentation registration
- * in this file - the distro turns on its bundled LangChain + OpenAI Agents
- * instrumentations by default.
+ * Topology per protocol:
+ *
+ *     StateGraph (sequential workflow)
+ *     +- MainAgent (createReactAgent, tools=[weatherDataAgent])
+ *     |  +- weatherDataAgent  <-- tool() wrapping inner DataAgent (agent-as-tool)
+ *     |     +- DataAgent (createReactAgent, tools=[getCurrentWeather])
+ *     +- VerifierAgent (chat.invoke, no tools, streaming)
+ *
+ * The Verifier agent's chat client is built with `streaming: true` so that at
+ * least one sub-agent uses streaming while the other two stay non-streaming,
+ * mirroring the sibling LC Python multi-agent flow.
  */
 
 import { AzureChatOpenAI, ChatOpenAI } from "@langchain/openai";
@@ -16,6 +23,12 @@ import {
   SystemMessage,
 } from "@langchain/core/messages";
 import { createReactAgent } from "@langchain/langgraph/prebuilt";
+import {
+  StateGraph,
+  START,
+  END,
+  MessagesAnnotation,
+} from "@langchain/langgraph";
 import { z } from "zod";
 
 import { randomUUID } from "node:crypto";
@@ -28,20 +41,37 @@ const AZURE_OPENAI_ENDPOINT =
   "https://alkap-mc9jji6o-eastus2.cognitiveservices.azure.com";
 const AZURE_OPENAI_API_VERSION = "2025-04-01-preview";
 
-const DEPLOYMENT_NAMES = [
-  "deployment-gpt-5.4-mini",
-  "deployment-gpt-4o",
-  "deployment-gpt-4o-mini",
-  "deployment-Phi-4",
-  "deployment-Llama-3.3-70B-Instruct",
-];
-
-const NO_TOOL_DEPLOYMENTS = new Set([
-  "deployment-Phi-4",
-]);
+// Per-role deployments. One workflow per protocol exercises three distinct
+// models (data, main, verifier).
+const AGENT_DEPLOYMENTS = {
+  data: "deployment-gpt-4o-mini",
+  main: "deployment-gpt-5.4-mini",
+  verifier: "deployment-gpt-4o",
+};
 
 const SERVICE_NAME = "LangChainNodeJs-MS-Distro";
 const USER_PROMPT = "What's the weather like in Seattle and San Francisco?";
+
+const DATA_INSTRUCTIONS =
+  "You are a weather data agent. You look up weather information for " +
+  "one or more cities using the get_current_weather tool. " +
+  "Call the tool ONCE per requested city, then return a concise JSON-like " +
+  "string containing all results. Do not add any commentary.";
+
+const MAIN_INSTRUCTIONS =
+  "You are a friendly weather assistant. When the user asks about weather, " +
+  "delegate the lookup to the weather_data_agent tool by passing it the list " +
+  "of cities (e.g. 'Seattle, WA; San Francisco, CA'). Then summarize the " +
+  "results to the user in plain English.";
+
+const VERIFIER_INSTRUCTIONS =
+  "You are a verifier agent. You will see a conversation between a user and " +
+  "a weather assistant. Sanity-check the assistant's response. Look for: " +
+  "(1) hallucinated cities not in the user's question, " +
+  "(2) impossible temperature/condition pairs, " +
+  "(3) missing cities the user asked about. " +
+  "Reply with one line starting with 'VERIFIED: ...' if the response is sound, " +
+  "or 'WARN: ...' if not. Do not call any tools.";
 
 const WEATHER_DATA = {
   "seattle, wa": [55, "Rainy"],
@@ -80,16 +110,10 @@ const getCurrentWeather = tool(
   }
 );
 
-function instructions(useTools) {
-  return (
-    "You are a helpful weather assistant. " +
-    (useTools
-      ? "Use the get_current_weather tool to look up weather information when asked."
-      : "Answer weather questions using your knowledge. You do not have access to tools.")
-  );
-}
-
-function makeAzureChat(deployment, apiKey) {
+// ---------------------------------------------------------------------------
+// Chat client factories
+// ---------------------------------------------------------------------------
+function makeAzureChat(deployment, apiKey, streaming = false) {
   return new AzureChatOpenAI({
     azureOpenAIApiKey: apiKey,
     azureOpenAIApiInstanceName: "alkap-mc9jji6o-eastus2",
@@ -98,17 +122,17 @@ function makeAzureChat(deployment, apiKey) {
     azureOpenAIBasePath: `${AZURE_OPENAI_ENDPOINT}/openai/deployments`,
     timeout: 60_000,
     maxRetries: 1,
-    streaming: true,
+    streaming,
   });
 }
 
-function makeFoundryChat(deployment, apiKey) {
+function makeFoundryChat(deployment, apiKey, streaming = false) {
   return new ChatOpenAI({
     model: deployment,
     apiKey,
     timeout: 60_000,
     maxRetries: 1,
-    streaming: true,
+    streaming,
     configuration: {
       baseURL: BASE_URL,
       defaultHeaders: { "api-key": apiKey },
@@ -116,53 +140,19 @@ function makeFoundryChat(deployment, apiKey) {
   });
 }
 
-function makeFoundryResponsesChat(deployment, apiKey) {
+function makeFoundryResponsesChat(deployment, apiKey, streaming = false) {
   return new ChatOpenAI({
     model: deployment,
     apiKey,
     timeout: 60_000,
     maxRetries: 1,
     useResponsesApi: true,
-    streaming: true,
+    streaming,
     configuration: {
       baseURL: BASE_URL,
       defaultHeaders: { "api-key": apiKey },
     },
   });
-}
-
-function buildAgentRunner(chat, useTools) {
-  const sys = instructions(useTools);
-
-  if (useTools) {
-    const agent = createReactAgent({
-      llm: chat,
-      tools: [getCurrentWeather],
-    });
-
-    return async (userPrompt) => {
-      const result = await agent.invoke({
-        messages: [new SystemMessage(sys), new HumanMessage(userPrompt)],
-      });
-      const messages = result.messages ?? [];
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const msg = messages[i];
-        if (msg instanceof AIMessage || msg.constructor?.name === "AIMessage") {
-          const text = extractText(msg.content);
-          if (text) return text;
-        }
-      }
-      return "";
-    };
-  }
-
-  return async (userPrompt) => {
-    const response = await chat.invoke([
-      new SystemMessage(sys),
-      new HumanMessage(userPrompt),
-    ]);
-    return extractText(response.content);
-  };
 }
 
 function extractText(content) {
@@ -182,50 +172,124 @@ function extractText(content) {
   return String(content);
 }
 
-function buildAgents(apiKey) {
-  const agents = [];
-  for (const deployment of DEPLOYMENT_NAMES) {
-    const useTools = !NO_TOOL_DEPLOYMENTS.has(deployment);
+// ---------------------------------------------------------------------------
+// Multi-agent workflow per protocol
+// ---------------------------------------------------------------------------
+function buildWorkflow(dataChat, mainChat, verifierChat) {
+  // Inner data agent — has the raw weather tool.
+  const dataAgent = createReactAgent({
+    llm: dataChat,
+    tools: [getCurrentWeather],
+  });
 
-    try {
-      const chatAz = makeAzureChat(deployment, apiKey);
-      agents.push({
-        label: `${deployment} [completions]`,
-        protocol: "completions",
-        run: buildAgentRunner(chatAz, useTools),
+  // Wrap data agent as a tool so the main agent can delegate to it.
+  const weatherDataAgent = tool(
+    async ({ cities }) => {
+      const result = await dataAgent.invoke({
+        messages: [
+          new SystemMessage(DATA_INSTRUCTIONS),
+          new HumanMessage(`Look up weather for: ${cities}`),
+        ],
       });
-    } catch (ex) {
-      console.log(`[build] failed completions ${deployment}: ${ex}`);
-    }
-
-    if (useTools) {
-      try {
-        const chatF = makeFoundryChat(deployment, apiKey);
-        agents.push({
-          label: `${deployment} [foundry-completions]`,
-          protocol: "foundry-completions",
-          run: buildAgentRunner(chatF, useTools),
-        });
-      } catch (ex) {
-        console.log(`[build] failed foundry ${deployment}: ${ex}`);
+      const messages = result.messages ?? [];
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        if (msg instanceof AIMessage || msg.constructor?.name === "AIMessage") {
+          const text = extractText(msg.content);
+          if (text) return text;
+        }
       }
-
-      try {
-        const chatFR = makeFoundryResponsesChat(deployment, apiKey);
-        agents.push({
-          label: `${deployment} [foundry-responses]`,
-          protocol: "foundry-responses",
-          run: buildAgentRunner(chatFR, useTools),
-        });
-      } catch (ex) {
-        console.log(`[build] failed foundry-responses ${deployment}: ${ex}`);
-      }
+      return "";
+    },
+    {
+      name: "weather_data_agent",
+      description: "Delegate weather lookups to the weather data agent.",
+      schema: z.object({
+        cities: z
+          .string()
+          .describe(
+            "Semicolon- or comma-separated list of cities to look up."
+          ),
+      }),
     }
+  );
+
+  // Main agent — has the data-agent-as-tool.
+  const mainAgent = createReactAgent({
+    llm: mainChat,
+    tools: [weatherDataAgent],
+  });
+
+  async function mainNode(state) {
+    const before = state.messages.length;
+    const result = await mainAgent.invoke({
+      messages: [new SystemMessage(MAIN_INSTRUCTIONS), ...state.messages],
+    });
+    // mainAgent.invoke returns the full message list including our system
+    // prompt + prior user message; skip the (before+1) we passed in.
+    const newMsgs = (result.messages ?? []).slice(before + 1);
+    return { messages: newMsgs };
   }
-  return agents;
+
+  async function verifyNode(state) {
+    const result = await verifierChat.invoke([
+      new SystemMessage(VERIFIER_INSTRUCTIONS),
+      ...state.messages,
+    ]);
+    return { messages: [result] };
+  }
+
+  const graph = new StateGraph(MessagesAnnotation)
+    .addNode("main", mainNode)
+    .addNode("verify", verifyNode)
+    .addEdge(START, "main")
+    .addEdge("main", "verify")
+    .addEdge("verify", END)
+    .compile();
+
+  return graph;
 }
 
-async function runOnce(agents, runLabel) {
+function buildWorkflows(apiKey) {
+  const workflows = [];
+
+  const factories = {
+    completions: (deployment, streaming) =>
+      makeAzureChat(deployment, apiKey, streaming),
+    "foundry-completions": (deployment, streaming) =>
+      makeFoundryChat(deployment, apiKey, streaming),
+    "foundry-responses": (deployment, streaming) =>
+      makeFoundryResponsesChat(deployment, apiKey, streaming),
+  };
+
+  for (const protocol of [
+    "completions",
+    "foundry-completions",
+    "foundry-responses",
+  ]) {
+    try {
+      const make = factories[protocol];
+      const dataChat = make(AGENT_DEPLOYMENTS.data, false);
+      const mainChat = make(AGENT_DEPLOYMENTS.main, false);
+      // Verifier streams so each workflow has both streaming and
+      // non-streaming sub-agents (matches LC Python topology).
+      const verifierChat = make(AGENT_DEPLOYMENTS.verifier, true);
+      workflows.push({
+        protocol,
+        graph: buildWorkflow(dataChat, mainChat, verifierChat),
+      });
+    } catch (ex) {
+      console.log(`[build] failed ${protocol}: ${ex}`);
+    }
+  }
+
+  return workflows;
+}
+
+// ---------------------------------------------------------------------------
+// Run
+// ---------------------------------------------------------------------------
+async function runOnce(workflows, runLabel) {
   console.log(`\n=== Run: ${runLabel} ===`);
   console.log(`You: ${USER_PROMPT}\n`);
 
@@ -235,30 +299,61 @@ async function runOnce(agents, runLabel) {
   // shim is absent (e.g. running without the bootstrap), fall through.
   const setProto = globalThis.__setTestProtocol ?? ((_p, fn) => fn());
 
-  const tasks = agents.map(async ({ label, protocol, run }) =>
-    setProto(protocol, async () => {
-      try {
-        const text = await run(USER_PROMPT);
-        return { label, text };
-      } catch (error) {
-        return { label, error };
-      }
-    })
+  const sequential = ["1", "true", "yes"].includes(
+    (process.env.SEQUENTIAL ?? "").toLowerCase()
   );
 
-  const results = await Promise.all(tasks);
+  async function runOne({ protocol, graph }) {
+    return setProto(protocol, async () => {
+      try {
+        const result = await graph.invoke({
+          messages: [new HumanMessage(USER_PROMPT)],
+        });
+        return { protocol, result };
+      } catch (error) {
+        return { protocol, error };
+      }
+    });
+  }
+
+  let results;
+  if (sequential) {
+    results = [];
+    for (const wf of workflows) {
+      results.push(await runOne(wf));
+    }
+  } else {
+    results = await Promise.all(workflows.map(runOne));
+  }
+
   let successes = 0;
   for (const r of results) {
-    console.log(`--- [${r.label}] ---`);
+    console.log(`--- [${r.protocol}] ---`);
     if (r.error) {
       console.log(`  Error: ${r.error?.message ?? r.error}`);
       continue;
     }
     successes += 1;
-    if (r.text) console.log(`  Assistant: ${r.text}`);
+
+    const msgs = r.result?.messages ?? [];
+    // Last AIMessage is the verifier's response; the AIMessage before any
+    // verifier output is the main agent's final assistant message.
+    const aiTexts = [];
+    for (const msg of msgs) {
+      if (msg instanceof AIMessage || msg.constructor?.name === "AIMessage") {
+        const text = extractText(msg.content);
+        if (text && !text.startsWith("[tool")) {
+          aiTexts.push(text);
+        }
+      }
+    }
+    const verifier = aiTexts[aiTexts.length - 1] ?? "";
+    const assistant = aiTexts[aiTexts.length - 2] ?? "";
+    if (assistant) console.log(`  Assistant: ${assistant}`);
+    if (verifier) console.log(`  Verifier:  ${verifier}`);
   }
   console.log(
-    `\n[${runLabel}] ${successes}/${results.length} agents succeeded`
+    `\n[${runLabel}] ${successes}/${results.length} workflows succeeded`
   );
   return successes;
 }
@@ -274,8 +369,9 @@ async function main() {
     return 1;
   }
 
-  const agents = buildAgents(apiKey);
-  console.log(`Built ${agents.length} agent variants.`);
+  console.log(`Agent deployments:`, AGENT_DEPLOYMENTS);
+  const workflows = buildWorkflows(apiKey);
+  console.log(`Built ${workflows.length} workflow variants.`);
 
   const loopForever = ["1", "true", "yes"].includes(
     (process.env.LOOP_FOREVER ?? "").toLowerCase()
@@ -285,7 +381,7 @@ async function main() {
   let iteration = 0;
   while (true) {
     iteration += 1;
-    await runOnce(agents, `iteration-${iteration}`);
+    await runOnce(workflows, `iteration-${iteration}`);
     if (!loopForever) break;
     console.log(`\nSleeping ${interval}s before next iteration...`);
     await new Promise((r) => setTimeout(r, interval * 1000));

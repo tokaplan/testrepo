@@ -8,16 +8,25 @@ Compliance of the four sample weather agents (LangChain Python, LangChain NodeJs
 
 ## Streaming coverage
 
-Each implementation exercises at least one streaming agent so that the matrix covers the SSE / streaming code path in addition to the regular request/response code path:
+Every implementation now exercises **both** streaming and non-streaming sub-agents inside a single workflow, so the matrix covers the SSE / streaming code path side-by-side with the regular request/response code path:
 
-| Distro | Streaming agent(s) | Mechanism |
-|---|---|---|
-| MAF .NET | Main, Verifier (Data agent runs non-stream as a tool) | `InProcessExecution.RunStreamingAsync` |
-| MAF Python | Main, Data, Verifier (whole workflow) | `workflow.run(prompt, stream=True)` |
-| LangChain Python | Verifier | `AzureChatOpenAI`/`ChatOpenAI(streaming=True)` |
-| LangChain NodeJs | Single agent per (deployment, protocol) | `@langchain/openai` chat client `streaming: true` |
+| Distro | Streaming sub-agent(s) | Non-streaming sub-agent(s) | Mechanism |
+|---|---|---|---|
+| MAF .NET | Main, Verifier | Data | Main+Verifier via `InProcessExecution.RunStreamingAsync`; Data invoked from Main as a tool via `AsAIFunction → RunAsync` (non-stream) |
+| MAF Python | Data | Main, Verifier | `workflow.run(prompt)` (non-stream) → `AgentExecutor` calls Main/Verifier with `stream=False`; Data (wrapped via `Agent.as_tool()`) is forced to stream because `_agent_wrapper` hardcodes `stream=True` |
+| LangChain Python | Verifier | Main, Data | Per-role chat clients: Verifier built with `AzureChatOpenAI(streaming=True)`; Main+Data built with default (non-stream) |
+| LangChain NodeJs | Verifier | Main, Data | Multi-agent topology (matches LC Python): per-role `@langchain/openai` chat clients; Verifier with `streaming: true`, Main+Data with default |
 
-Only MAF .NET surfaces a `gen_ai.request.stream=true` (and `gen_ai.response.time_to_first_chunk`) attribute on its chat spans. The Python `agent_framework` chat instrumentation and the LangChain Python/NodeJs instrumentations do not emit a streaming flag at all (the underlying `openai` SDK call is invoked with `stream=True`, verified by HTTP-call monkey-patching, but the attribute is omitted on the span). This is the same "universal gap" listed in the gaps section below.
+Mixed-mode verified by HTTP-call monkey-patching the OpenAI SDK / `fetch` on each implementation:
+
+| Distro | Probe run | Calls per workflow | stream=true | stream=false |
+|---|---|---|---|---|
+| MAF .NET | telemetry (`mix-mafnet-215259`) — chat span `gen_ai.request.stream` attr | 5 per protocol | 3 (Main planning + Main synthesis + Verifier) | 2 (Data ×2) |
+| MAF Python | `probe_mafpy_stream.py` (completions protocol) | 5 | 2 (Data ×2 via `as_tool`) | 3 (Main planning, Main synthesis, Verifier) |
+| LangChain Python | `probe_lcpy_stream.py` (per-role factories) | 5 per protocol | 1 (Verifier) | 4 (Main ×2 + Data ×2) |
+| LangChain NodeJs | `probe_lcnode_stream.mjs` (all 3 protocols) | 5 per protocol | 1 (Verifier) | 4 (Main ×2 + Data ×2) |
+
+Only MAF .NET surfaces a `gen_ai.request.stream=true` (and `gen_ai.response.time_to_first_chunk`) attribute on its chat spans. The Python `agent_framework` chat instrumentation and the LangChain Python/NodeJs instrumentations do not emit a streaming flag at all (the underlying SDK call is invoked with `stream=True`, verified by the probes above, but the attribute is omitted on the span). This is the same "universal gap" listed in the gaps section below.
 
 ## Span-existence summary
 
