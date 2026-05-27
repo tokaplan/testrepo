@@ -40,7 +40,16 @@ BASE_URL = ENDPOINT + "/openai/v1/"
 AZURE_OPENAI_ENDPOINT = "https://alkap-mc9jji6o-eastus2.cognitiveservices.azure.com"
 AZURE_OPENAI_API_VERSION = "2025-04-01-preview"
 
-DEPLOYMENT = "deployment-gpt-5.4-mini"
+DEPLOYMENT = "deployment-gpt-5.4-mini"  # fallback / unused when AGENT_DEPLOYMENTS is in effect
+
+# Multi-agent topology: assign a different deployment to each agent role so a
+# single workflow run produces telemetry from multiple models. Matches the
+# MAF agents' per-role deployment scheme.
+AGENT_DEPLOYMENTS = {
+    "data":     "deployment-gpt-4o-mini",   # tool-caller
+    "main":     "deployment-gpt-5.4-mini",  # orchestrator
+    "verifier": "deployment-gpt-4o",        # judge (chat model)
+}
 
 SERVICE_NAME = "LangChainPython-MS-Distro"
 USER_PROMPT = "What's the weather like in Seattle and San Francisco?"
@@ -201,10 +210,10 @@ def _extract_text(message) -> str:
 # ---------------------------------------------------------------------------
 # Build the multi-agent workflow for a given chat model
 # ---------------------------------------------------------------------------
-def build_workflow(chat_model, protocol_tag: str):
+def build_workflow(data_model, main_model, verifier_model, protocol_tag: str):
     # Inner data agent: has the raw weather tool
     data_agent = create_agent(
-        chat_model,
+        data_model,
         tools=[get_current_weather],
         system_prompt=DATA_INSTRUCTIONS,
     )
@@ -229,14 +238,14 @@ def build_workflow(chat_model, protocol_tag: str):
 
     # Main agent: has the data-agent-as-tool
     main_agent = create_agent(
-        chat_model,
+        main_model,
         tools=[weather_data_agent],
         system_prompt=MAIN_INSTRUCTIONS,
     )
 
     # Verifier agent: no tools
     verifier_agent = create_agent(
-        chat_model,
+        verifier_model,
         tools=[],
         system_prompt=VERIFIER_INSTRUCTIONS,
     )
@@ -270,23 +279,24 @@ def build_workflow(chat_model, protocol_tag: str):
 def build_workflows(api_key: str):
     workflows = []
 
-    try:
-        chat_az = _make_azure_chat(DEPLOYMENT, api_key)
-        workflows.append(("completions", build_workflow(chat_az, "completions")))
-    except Exception as ex:
-        print(f"[build] failed completions: {ex}")
+    def _factory(protocol):
+        if protocol == "completions":
+            return lambda d: _make_azure_chat(d, api_key)
+        if protocol == "foundry-completions":
+            return lambda d: _make_foundry_chat(d, api_key)
+        if protocol == "foundry-responses":
+            return lambda d: _make_foundry_responses_chat(d, api_key)
+        raise ValueError(protocol)
 
-    try:
-        chat_f = _make_foundry_chat(DEPLOYMENT, api_key)
-        workflows.append(("foundry-completions", build_workflow(chat_f, "foundry-completions")))
-    except Exception as ex:
-        print(f"[build] failed foundry-completions: {ex}")
-
-    try:
-        chat_fr = _make_foundry_responses_chat(DEPLOYMENT, api_key)
-        workflows.append(("foundry-responses", build_workflow(chat_fr, "foundry-responses")))
-    except Exception as ex:
-        print(f"[build] failed foundry-responses: {ex}")
+    for protocol in ("completions", "foundry-completions", "foundry-responses"):
+        try:
+            make = _factory(protocol)
+            data_m = make(AGENT_DEPLOYMENTS["data"])
+            main_m = make(AGENT_DEPLOYMENTS["main"])
+            verifier_m = make(AGENT_DEPLOYMENTS["verifier"])
+            workflows.append((protocol, build_workflow(data_m, main_m, verifier_m, protocol)))
+        except Exception as ex:
+            print(f"[build] failed {protocol}: {ex}")
 
     return workflows
 
@@ -306,7 +316,12 @@ async def run_once(workflows, run_label: str) -> int:
         except Exception as ex:
             return (protocol, None, ex)
 
-    results = await asyncio.gather(*(_run(p, g) for (p, g) in workflows))
+    if os.environ.get("SEQUENTIAL", "").lower() in ("1", "true", "yes"):
+        results = []
+        for p, g in workflows:
+            results.append(await _run(p, g))
+    else:
+        results = await asyncio.gather(*(_run(p, g) for (p, g) in workflows))
     successes = 0
     for protocol, result, error in results:
         print(f"--- [{protocol}] ---")

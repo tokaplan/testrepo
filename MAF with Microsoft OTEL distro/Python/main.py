@@ -301,9 +301,14 @@ async def main() -> int:
         except Exception as ex:
             return (protocol, None, None, None, ex)
 
-    results = await asyncio.gather(
-        *(run_workflow(proto, clients) for proto, clients in workflows)
-    )
+    if os.environ.get("SEQUENTIAL", "").lower() in ("1", "true", "yes"):
+        results = []
+        for proto, clients in workflows:
+            results.append(await run_workflow(proto, clients))
+    else:
+        results = await asyncio.gather(
+            *(run_workflow(proto, clients) for proto, clients in workflows)
+        )
 
     successes = 0
     for protocol, result, main_id, verifier_id, error in results:
