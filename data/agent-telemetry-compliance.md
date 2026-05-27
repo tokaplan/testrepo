@@ -2,6 +2,26 @@
 
 Compliance of the four sample weather agents (LangChain Python, LangChain NodeJs, MAF Python, MAF .NET) with the [OpenTelemetry GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/) when run against Azure OpenAI Chat Completions API (CAPI) and Foundry Responses API (RAPI) endpoints, using the Microsoft OpenTelemetry distro.
 
+> ## 📌 Scope — the 4 canonical implementations
+>
+> **Every row of this matrix is produced by exactly one of these four
+> folders. Do not substitute, do not validate against legacy folders. See
+> [`../CANONICAL-AGENTS.md`](../CANONICAL-AGENTS.md) for the full pre-flight
+> checklist.**
+>
+> | # | Implementation | Disk path | Entry point |
+> |:-:|---|---|---|
+> | 1 | **MAF .NET** | `MAF with Microsoft OTEL distro\DotNet\` | `Program.cs` |
+> | 2 | **MAF Python** | `MAF with Microsoft OTEL distro\Python\` | `main.py` |
+> | 3 | **LangChain Python** | `LangChain with Microsoft OTEL distro\Python\` | `main.py` |
+> | 4 | **LangChain NodeJs** | `LangChain with Microsoft OTEL distro\NodeJs\` | `main.js` |
+>
+> Row → implementation mapping: rows **1, 2, 3** = LangChain Python · rows **4, 5, 6** = LangChain NodeJs · rows **7, 8, 9** = MAF Python · rows **10, 11** = MAF .NET.
+>
+> Legacy folders (e.g. `WeatherChat\`, `WeatherChatMAF\`, `LangChainPython\`,
+> `LangChainNodeJs\`) are **superseded** and must not be used for matrix
+> validation.
+
 ## Score
 
 🟢 **7** · 🟡 **3** · 🔴 **1**
