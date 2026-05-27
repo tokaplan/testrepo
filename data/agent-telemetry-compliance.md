@@ -175,7 +175,7 @@ workflow root
 | Distro | Main + Verifier sibling parent | WeatherData (agent-as-tool) parent | Main Agent attribution gap reproduced? |
 |---|---|---|---|
 | MAF Python | ✓ `executor.process` under `workflow.run` (workflow root) | ✓ `execute_tool weather_data_agent` (under Main) | **No** — siblings correctly attributed to the workflow root via `executor.process` parents. |
-| MAF .NET | ❌ **No parent — siblings are root spans** | ✓ `execute_tool weather_data_agent` (under Main) | **Yes** — exactly the gap the spec describes. `MainWeatherAgent` and `VerifierAgent` `invoke_agent` spans have no shared parent and no `microsoft.gen_ai.main_agent.*` attribute to bridge them. |
+| MAF .NET | ❌ **No parent — siblings are root spans**, but ✅ now bridged via `microsoft.gen_ai.main_agent.name` attribute (see Main Agent attribution section below) | ✓ `execute_tool weather_data_agent` (under Main) | **Closed in `Microsoft.OpenTelemetry 1.0.3`** — root sibling `invoke_agent` spans still have no shared parent, but the spec's `microsoft.gen_ai.main_agent.*` SpanProcessor now propagates the main-agent identity correctly, so customers *can* group sibling roots and all descendant spans by main agent. |
 | LangChain Python | ⚠ Parents are LangGraph node spans (`main`, `verify`) which descend from a common `invoke_agent LangGraph` root | ✓ Inner `invoke_agent LangGraph` nested under `tools` span (which is under the data agent's own `invoke_agent LangGraph`) | **Partial** — there *is* a common root, but all 6 `invoke_agent` spans share the generic name `"LangGraph"` (`gen_ai.agent.name` not differentiated per agent), so it is impossible to tell from the span which logical agent (Main / WeatherData / Verifier) it represents. |
 | LangChain NodeJs | n/a (no `invoke_agent` spans emitted — see rows 4–6) | n/a (no `invoke_agent` spans emitted) | **Worse** — no `invoke_agent` spans at all; the verifier and main agent are visually indistinguishable in the trace. |
 
@@ -191,7 +191,7 @@ workflow root
 ### Notes
 
 - **MAF Python is the gold standard for multi-agent attribution.** The `agent-framework` workflow runtime emits an outer `workflow.run` span, plus `executor.process <name>` spans per agent step, plus `invoke_agent <AgentName>` under each executor. Sibling agents are unambiguously joined to the workflow.
-- **MAF .NET reproduces the spec's attribution gap.** `AgentWorkflowBuilder.BuildSequential` + `InProcessExecution.RunStreamingAsync` invoke each agent but emit **no workflow / executor parent span**. Each agent's `invoke_agent` span is parentless. Without a `microsoft.gen_ai.main_agent.*` attribute (or a synthetic workflow root from the OTel SDK), there is no way to know that `MainWeatherAgent` and `VerifierAgent` belong to the same workflow run.
+- **MAF .NET reproduces (and then closes) the spec's attribution gap.** `AgentWorkflowBuilder.BuildSequential` + `InProcessExecution.RunStreamingAsync` invoke each agent but emit **no workflow / executor parent span**. Each agent's `invoke_agent` span is parentless. The trace topology alone cannot tell you that `MainWeatherAgent` and `VerifierAgent` belong to the same workflow run — but `Microsoft.OpenTelemetry 1.0.3` now implements the [Main Agent attribution spec](#main-agent-attribution-spec-compliance) (both OnStart inheritance and OnEnd self-promotion), so every span carries `microsoft.gen_ai.main_agent.{name,id}` identifying the outermost agent of its branch. Customers can now group by main agent without traversing the parent chain.
 - **LangChain Python's instrumentation under-names agents.** Every `invoke_agent` span emits `gen_ai.agent.name = "LangGraph"` regardless of which logical agent ran. The trace hierarchy is intact (so sibling attribution works), but the spans are not human-readable without inspecting tool calls in the surrounding spans.
 - **LangChain NodeJs emits no `invoke_agent` spans at all** (consistent with rows 4–6 above), so the multi-agent topology is invisible end-to-end — both the agent-as-tool boundary and the sibling workflow are unobservable.
 
@@ -210,12 +210,28 @@ End-state: every span in a trace is tagged with the **outermost agent** of its b
 
 | Distro | Distro package | OnStart inheritance (children) | OnEnd self-promotion (root `invoke_agent`) | All 4 spec attributes emitted? | Verdict |
 |---|---|:-:|:-:|:-:|---|
-| MAF Python | `microsoft-opentelemetry 1.2.0` | ✅ works (`name`, `id` via `gen_ai.agent.*` fallback) | ❌ root Main + Verifier `invoke_agent` spans never get `main_agent.*` | ⚠ partial — `name` + `id` present, `version` 0/61, `conversation_id` 2/61 | **Partial** — children attributed via parent's `gen_ai.agent.name`, but root `invoke_agent` spans are unattributed. |
-| MAF .NET | `Microsoft.OpenTelemetry 1.0.3` | ❌ no `microsoft.gen_ai.main_agent.*` on any span | ❌ no `microsoft.gen_ai.main_agent.*` on any span | ❌ none | **Not implemented** — the SpanProcessor described in the spec is not registered in this distro version. |
-| LangChain Python | `microsoft-opentelemetry 1.2.0` | ❌ no children attributed | ❌ no roots attributed | ❌ none | **Broken upstream** — the distro's SpanProcessor *is* registered (same package as MAF Py) but the LangChain `invoke_agent` spans have an empty `gen_ai.agent.name` customDimension, so OnStart has nothing to copy and OnEnd has nothing to promote. |
-| LangChain NodeJs | `@microsoft/opentelemetry 1.0.2` | n/a — no `invoke_agent` spans emitted at all (rows 4–6) | n/a | ❌ none | **Moot / not testable** — the trace lacks `invoke_agent` spans entirely. |
+| MAF Python | `microsoft-opentelemetry 1.2.0` | ✅ works (`name`, `id` via `gen_ai.agent.*` fallback) | ❌ root Main + Verifier `invoke_agent` spans never get `main_agent.*` | ⚠ partial — `name` + `id` present on children, `version` 0/all, `conversation_id` partial | **Partial** — children attributed via parent's `gen_ai.agent.name`, but root `invoke_agent` spans are unattributed. *(unchanged from previous validation — distro version unchanged)* |
+| MAF .NET | `Microsoft.OpenTelemetry 1.0.3` + `Microsoft.Agents.AI 1.7.0` | ✅ works — all chat / execute_tool / HTTP / nested `invoke_agent` spans inherit | ✅ works — root `MainWeatherAgent` and `VerifierAgent` `invoke_agent` spans self-promote `gen_ai.agent.name → microsoft.gen_ai.main_agent.name` | ⚠ partial — `name` + `id` present on **100%** of spans (16/16 chat-completions run, 23/23 responses run); `version` 0/all (no `gen_ai.agent.version` to fall back from); `conversation_id` partial | ✅ **Fully compliant for `name` + `id`** — newly implemented in `1.0.3`. Was "Not implemented" in `1.0.2`. |
+| LangChain Python | `microsoft-opentelemetry 1.2.0` | ❌ no children attributed | ❌ no roots attributed | ❌ none | **Broken upstream** — the distro's SpanProcessor *is* registered (same package as MAF Py) but the LangChain `invoke_agent LangGraph` spans have an empty `gen_ai.agent.name` customDimension, so OnStart has nothing to copy and OnEnd has nothing to promote. |
+| LangChain NodeJs | no `@microsoft/opentelemetry` Node package installed (traceloop-based) | n/a — no `invoke_agent` spans emitted at all | n/a | ❌ none | **Not applicable** — no Microsoft Node distro on the agent today; relies on `@traceloop/instrumentation-langchain 0.14.6` which doesn't emit `invoke_agent` spans. |
+
+### Evidence (sample span breakdown — MAF .NET, `responses` protocol, `v2-mafnet-112454`)
+
+This is the new evidence after the `Microsoft.OpenTelemetry 1.0.3` + `Microsoft.Agents.AI 1.7.0` upgrade — the spec is now correctly enforced.
+
+| Span | `gen_ai.agent.name` | `microsoft.gen_ai.main_agent.name` |
+|---|---|---|
+| `invoke_agent MainWeatherAgent-responses` (root) | `MainWeatherAgent-responses` | `MainWeatherAgent-responses` ← OnEnd self-promoted ✓ |
+| `chat deployment-gpt-5.4-mini` (under Main) | — | `MainWeatherAgent-responses` ← OnStart inherited ✓ |
+| `execute_tool weather_data_agent` (under Main) | — | `MainWeatherAgent-responses` ← OnStart inherited ✓ |
+| `invoke_agent WeatherDataAgent-responses` (nested under Main) | `WeatherDataAgent-responses` | `MainWeatherAgent-responses` ← OnStart inherited from parent ✓ |
+| `chat deployment-gpt-4o-mini` (under WeatherData) | — | `MainWeatherAgent-responses` ← OnStart inherited ✓ |
+| `invoke_agent VerifierAgent-responses` (sibling root) | `VerifierAgent-responses` | `VerifierAgent-responses` ← OnEnd self-promoted ✓ |
+| `chat deployment-gpt-4o` (under Verifier) | — | `VerifierAgent-responses` ← OnStart inherited ✓ |
 
 ### Evidence (sample span breakdown — MAF Python, `responses` protocol, `ma-mafpy-103656`)
+
+MAF Python's behavior is **unchanged** from the previous validation — the distro version (`microsoft-opentelemetry 1.2.0`) has not been re-released:
 
 | Span | `gen_ai.agent.name` | `microsoft.gen_ai.main_agent.name` |
 |---|---|---|
@@ -230,9 +246,20 @@ End-state: every span in a trace is tagged with the **outermost agent** of its b
 
 ### What customers can / cannot do today
 
+- ✅ With **MAF .NET (`Microsoft.OpenTelemetry 1.0.3`)**, customers can filter or aggregate **every** span in a multi-agent trace — root `invoke_agent`, nested `invoke_agent`, `chat`, `execute_tool`, HTTP — by `microsoft.gen_ai.main_agent.name` to scope a query to a single top-level agent. The spec is fully effective for `name` and `id`. *(`version` is missing because the underlying `gen_ai.agent.version` source attribute is never emitted; `conversation_id` is partial.)*
 - ✅ With **MAF Python**, customers *can* filter or aggregate **chat / execute_tool / HTTP / nested invoke_agent** spans by `microsoft.gen_ai.main_agent.name` to scope a query to a single top-level agent.
-- ❌ The two **root `invoke_agent`** spans per workflow run (Main + Verifier) are NOT included in such a filter. This is the OnEnd self-promotion gap. Workarounds: filter on `gen_ai.agent.name` for those rows, or fix `microsoft-opentelemetry` Python.
-- ❌ With **MAF .NET** and **LangChain Python / Node**, the spec is not effective at all — none of the four spec attributes appear on any span, so customers must rely on parent-span traversal in KQL to scope a query.
+- ❌ With **MAF Python**, the two **root `invoke_agent`** spans per workflow run (Main + Verifier) are NOT included in such a filter. This is the OnEnd self-promotion gap, still present in `microsoft-opentelemetry 1.2.0`. Workarounds: filter on `gen_ai.agent.name` for those rows, or wait for an OnEnd fix in the Python distro.
+- ❌ With **LangChain Python**, the spec is registered but not effective — no spans get `microsoft.gen_ai.main_agent.*` because the upstream LangChain instrumentor emits empty `gen_ai.agent.name`. Customers must rely on parent-span traversal in KQL to scope a query.
+- ❌ With **LangChain NodeJs**, there is no Microsoft Node distro installed; the agent uses `@traceloop/*` instrumentation which emits no `invoke_agent` spans at all.
+
+### Reference runs (v2 validation, after distro upgrade)
+
+| Distro | runId | Distro package(s) |
+|---|---|---|
+| MAF Python | `v2-mafpy-112454` | `microsoft-opentelemetry 1.2.0`, `agent-framework 1.6.0` |
+| MAF .NET | `v2-mafnet-112454` | `Microsoft.OpenTelemetry 1.0.3`, `Microsoft.Agents.AI 1.7.0`, `Microsoft.Agents.AI.Workflows 1.7.0` |
+| LangChain Python | `v2-lcpy-112454` | `microsoft-opentelemetry 1.2.0`, `langchain 1.2.16`, `langgraph 1.1.10` |
+| LangChain NodeJs | `v2-lcnode-112454` | `@traceloop/instrumentation-langchain 0.14.6` (no Microsoft Node distro) |
 
 ### KQL query — chat spans missing `gen_ai.usage.*`
 
