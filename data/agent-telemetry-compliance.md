@@ -141,6 +141,16 @@ Each agent runs against the same Azure Foundry / Azure OpenAI deployments and em
 
 The MAF Python and LangChain Python `main.py` scripts default to running the per-protocol workflows in parallel via `asyncio.gather`. Under parallel execution, both the langchain instrumentor and `agent_framework`'s span processor non-deterministically drop chat / `invoke_agent` / `execute_tool` spans (the workflows themselves still succeed). **All matrix validation runs must be executed with `SEQUENTIAL=1` set** so each protocol's workflow runs to completion before the next starts — this captures the full span set. The LangChain NodeJs `main.js` also supports `SEQUENTIAL=1` for the same reason. The MAF .NET program is single-protocol-per-run by construction and needs no knob.
 
+### Reproducibility note: Application Insights ingestion timing
+
+Application Insights typically ingests telemetry within **~15 seconds** of the agent emitting it. When validating a run:
+
+1. After the agent exits, wait **15 seconds** before issuing the first KQL query for `customDimensions['test.runId'] == '<runId>'`.
+2. If the expected spans are not yet visible, re-query every **15 seconds** until they appear.
+3. Treat anything longer than ~2 minutes as an ingestion stall and investigate (network, connection string, BatchSpanProcessor flush, etc.) rather than waiting indefinitely.
+
+Do not poll faster than every 15 seconds — it just wastes calls; the backing pipeline does not flush per-query.
+
 ### Resolved issue: `gen_ai.response.model` on RAPI returned deployment alias
 
 In older runs against the Foundry Responses API (run `sc2-*` from ~2 weeks earlier on
