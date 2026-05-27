@@ -2,7 +2,10 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Text.Json;
 using Azure.AI.OpenAI;
+using Azure.AI.Projects;
+using Azure.Identity;
 using Microsoft.Agents.AI;
+using Microsoft.Agents.AI.Foundry;
 using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
 using Microsoft.OpenTelemetry;
@@ -13,6 +16,7 @@ using OpenTelemetry.Trace;
 
 #pragma warning disable OPENAI001 // ResponsesClient is experimental
 #pragma warning disable MEAI001   // Microsoft.Extensions.AI experimental APIs
+#pragma warning disable SCME0002  // Microsoft.Agents.AI.Foundry preview surface (AsAIAgent / FoundryChatClient)
 
 // ---------------------------------------------------------------------------
 // WeatherChatMAF with Microsoft OpenTelemetry distro - multi-agent variant.
@@ -84,6 +88,16 @@ var azureClient = new AzureOpenAIClient(
     new Uri(azureOpenAIEndpoint),
     new System.ClientModel.ApiKeyCredential(apiKey));
 
+// AIProjectClient powers the `responses` protocol via Microsoft.Agents.AI.Foundry's
+// FoundryChatClient, which registers the ServedModelPolicy (Microsoft.Agents.AI.Foundry
+// 1.6.2-preview+, PR microsoft/agent-framework#5979). That policy captures the
+// `x-ms-served-model` Azure OpenAI response header and overwrites ChatResponse.ModelId
+// with the underlying snapshot (e.g. gpt-4o-mini-2024-07-18) instead of the deployment
+// alias the client sent in. AIProjectClient requires AAD auth (no API-key ctor), so we
+// use DefaultAzureCredential here — locally this picks up `az login`; in AKS pods it
+// uses the workload-identity managed identity.
+var aiProjectClient = new AIProjectClient(new Uri(endpoint), new DefaultAzureCredential());
+
 var rawWeatherTool = AIFunctionFactory.Create(WeatherPlugin.GetCurrentWeather);
 
 const string DataAgentInstructions =
@@ -107,11 +121,38 @@ const string VerifierInstructions =
     + "Reply with one line: either 'VERIFIED: <one-line summary>' "
     + "or 'WARN: <reason>'. Do not call any tools.";
 
-// For each protocol, provide a factory that returns an IChatClient for a given deployment.
-(string protocol, Func<string, IChatClient> makeClient)[] protocols =
+// Per-protocol factory: given role config, return a fully-wrapped AIAgent.
+//
+// - `responses` goes through AIProjectClient.AsAIAgent(...), which constructs a
+//   FoundryChatClient under the hood. FoundryChatClient registers the ServedModelPolicy
+//   on the inner pipeline so gen_ai.response.model carries the actual served snapshot.
+//   The clientFactory parameter lets us layer OpenTelemetry on top of the FoundryChatClient.
+//
+// - `completions` keeps the original AzureOpenAIClient + AsIChatClient flow. The Azure
+//   OpenAI Chat Completions API already returns the served snapshot in the response body's
+//   `model` field, so the header-extraction policy isn't needed for this path.
+IChatClient WrapTelemetry(IChatClient inner) =>
+    inner.AsBuilder().UseOpenTelemetry(sourceName: GenAISourceName).Build();
+
+(string protocol, Func<string, string, string, string, IList<AITool>?, AIAgent> makeAgent)[] protocols =
 {
-    ("responses",   dep => openAIClient.GetResponsesClient().AsIChatClient(defaultModelId: dep)),
-    ("completions", dep => azureClient.GetChatClient(dep).AsIChatClient()),
+    ("responses", (model, instructions, name, description, tools) =>
+        aiProjectClient.AsAIAgent(
+            model: model,
+            instructions: instructions,
+            name: name,
+            description: description,
+            tools: tools,
+            clientFactory: WrapTelemetry)),
+    ("completions", (model, instructions, name, description, tools) =>
+    {
+        IChatClient chat = WrapTelemetry(azureClient.GetChatClient(model).AsIChatClient());
+        return new ChatClientAgent(chat,
+            instructions: instructions,
+            name: name,
+            description: description,
+            tools: tools);
+    }),
 };
 
 string userPrompt = "What's the weather like in Seattle and San Francisco?";
@@ -123,22 +164,18 @@ Console.WriteLine();
 
 var results = new List<(string protocol, string? main, string? verifier, Exception? error)>();
 
-foreach (var (protocol, makeClient) in protocols)
+foreach (var (protocol, makeAgent) in protocols)
 {
     TestAgentProcessor.SetProtocol(protocol);
     try
     {
-        // Build a fresh chat client per agent role, each wrapped with telemetry so the
-        // emitted gen_ai.request.model / gen_ai.response.model reflect the per-agent model.
-        IChatClient dataChat     = makeClient(dataDeployment).AsBuilder().UseOpenTelemetry(sourceName: GenAISourceName).Build();
-        IChatClient mainChat     = makeClient(mainDeployment).AsBuilder().UseOpenTelemetry(sourceName: GenAISourceName).Build();
-        IChatClient verifierChat = makeClient(verifierDeployment).AsBuilder().UseOpenTelemetry(sourceName: GenAISourceName).Build();
-
-        AIAgent rawData = new ChatClientAgent(dataChat,
-            instructions: DataAgentInstructions,
-            name: $"WeatherDataAgent-{protocol}",
-            description: "Looks up weather for one or more cities via get_current_weather.",
-            tools: new List<AITool> { rawWeatherTool });
+        // WeatherDataAgent (inner tool agent) — has the raw get_current_weather function.
+        AIAgent rawData = makeAgent(
+            dataDeployment,
+            DataAgentInstructions,
+            $"WeatherDataAgent-{protocol}",
+            "Looks up weather for one or more cities via get_current_weather.",
+            new List<AITool> { rawWeatherTool });
         AIAgent dataAgent = new OpenTelemetryAgent(rawData);
 
         AITool weatherDataTool = dataAgent.AsAIFunction(new AIFunctionFactoryOptions
@@ -147,17 +184,22 @@ foreach (var (protocol, makeClient) in protocols)
             Description = "Delegate to the weather data agent. Pass the list of cities the user asked about.",
         });
 
-        AIAgent rawMain = new ChatClientAgent(mainChat,
-            instructions: MainAgentInstructions,
-            name: $"MainWeatherAgent-{protocol}",
-            description: "Friendly weather assistant that delegates lookups to a data agent.",
-            tools: new List<AITool> { weatherDataTool });
+        // MainWeatherAgent (orchestrator) — has weather_data_agent.AsAIFunction() as a tool.
+        AIAgent rawMain = makeAgent(
+            mainDeployment,
+            MainAgentInstructions,
+            $"MainWeatherAgent-{protocol}",
+            "Friendly weather assistant that delegates lookups to a data agent.",
+            new List<AITool> { weatherDataTool });
         AIAgent mainAgent = new OpenTelemetryAgent(rawMain);
 
-        AIAgent rawVerifier = new ChatClientAgent(verifierChat,
-            instructions: VerifierInstructions,
-            name: $"VerifierAgent-{protocol}",
-            description: "Sanity-checks the main agent's weather report.");
+        // VerifierAgent — pure chat, no tools.
+        AIAgent rawVerifier = makeAgent(
+            verifierDeployment,
+            VerifierInstructions,
+            $"VerifierAgent-{protocol}",
+            "Sanity-checks the main agent's weather report.",
+            null);
         AIAgent verifierAgent = new OpenTelemetryAgent(rawVerifier);
 
         Workflow workflow = AgentWorkflowBuilder.BuildSequential(
