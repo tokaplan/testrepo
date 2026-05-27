@@ -153,7 +153,7 @@ def get_current_weather(
 # ---------------------------------------------------------------------------
 # Chat client factories
 # ---------------------------------------------------------------------------
-def _make_azure_chat(deployment: str, api_key: str) -> AzureChatOpenAI:
+def _make_azure_chat(deployment: str, api_key: str, streaming: bool = False) -> AzureChatOpenAI:
     return AzureChatOpenAI(
         azure_endpoint=AZURE_OPENAI_ENDPOINT,
         azure_deployment=deployment,
@@ -162,10 +162,11 @@ def _make_azure_chat(deployment: str, api_key: str) -> AzureChatOpenAI:
         api_key=api_key,
         timeout=60,
         max_retries=1,
+        streaming=streaming,
     )
 
 
-def _make_foundry_chat(deployment: str, api_key: str) -> ChatOpenAI:
+def _make_foundry_chat(deployment: str, api_key: str, streaming: bool = False) -> ChatOpenAI:
     return ChatOpenAI(
         model=deployment,
         base_url=BASE_URL,
@@ -173,10 +174,11 @@ def _make_foundry_chat(deployment: str, api_key: str) -> ChatOpenAI:
         timeout=60,
         max_retries=1,
         default_headers={"api-key": api_key},
+        streaming=streaming,
     )
 
 
-def _make_foundry_responses_chat(deployment: str, api_key: str) -> ChatOpenAI:
+def _make_foundry_responses_chat(deployment: str, api_key: str, streaming: bool = False) -> ChatOpenAI:
     return ChatOpenAI(
         model=deployment,
         base_url=BASE_URL,
@@ -185,6 +187,7 @@ def _make_foundry_responses_chat(deployment: str, api_key: str) -> ChatOpenAI:
         max_retries=1,
         default_headers={"api-key": api_key},
         use_responses_api=True,
+        streaming=streaming,
     )
 
 
@@ -281,11 +284,11 @@ def build_workflows(api_key: str):
 
     def _factory(protocol):
         if protocol == "completions":
-            return lambda d: _make_azure_chat(d, api_key)
+            return lambda d, streaming=False: _make_azure_chat(d, api_key, streaming=streaming)
         if protocol == "foundry-completions":
-            return lambda d: _make_foundry_chat(d, api_key)
+            return lambda d, streaming=False: _make_foundry_chat(d, api_key, streaming=streaming)
         if protocol == "foundry-responses":
-            return lambda d: _make_foundry_responses_chat(d, api_key)
+            return lambda d, streaming=False: _make_foundry_responses_chat(d, api_key, streaming=streaming)
         raise ValueError(protocol)
 
     for protocol in ("completions", "foundry-completions", "foundry-responses"):
@@ -293,7 +296,12 @@ def build_workflows(api_key: str):
             make = _factory(protocol)
             data_m = make(AGENT_DEPLOYMENTS["data"])
             main_m = make(AGENT_DEPLOYMENTS["main"])
-            verifier_m = make(AGENT_DEPLOYMENTS["verifier"])
+            # Stream the verifier so that at least one agent per workflow exercises
+            # the streaming chat-completions / responses-API path. LangChain's
+            # `streaming=True` flag makes invoke()/ainvoke() internally consume
+            # the HTTP SSE stream while still returning a single AIMessage at the
+            # end, which keeps the LangGraph flow unchanged.
+            verifier_m = make(AGENT_DEPLOYMENTS["verifier"], streaming=True)
             workflows.append((protocol, build_workflow(data_m, main_m, verifier_m, protocol)))
         except Exception as ex:
             print(f"[build] failed {protocol}: {ex}")

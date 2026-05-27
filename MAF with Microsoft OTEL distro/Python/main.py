@@ -296,7 +296,16 @@ async def main() -> int:
                 verifier_client=clients["verifier"],
                 protocol_tag=protocol_tag,
             )
-            result = await workflow.run(user_prompt)
+            # Run in streaming mode. AgentExecutor checks ctx.is_streaming() and
+            # invokes each agent via agent.run(stream=True), so the main and
+            # verifier chat clients use the streaming API. The data agent is
+            # invoked via Agent.as_tool() which goes through the non-streaming
+            # path (tool results must be fully materialized before being fed
+            # back to the LLM) — same pattern as MAF .NET.
+            stream = workflow.run(user_prompt, stream=True)
+            async for _ in stream:
+                pass
+            result = await stream.get_final_response()
             return (protocol, result, main_id, verifier_id, None)
         except Exception as ex:
             return (protocol, None, None, None, ex)

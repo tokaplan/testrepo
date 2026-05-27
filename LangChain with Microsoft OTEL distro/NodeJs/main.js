@@ -98,6 +98,7 @@ function makeAzureChat(deployment, apiKey) {
     azureOpenAIBasePath: `${AZURE_OPENAI_ENDPOINT}/openai/deployments`,
     timeout: 60_000,
     maxRetries: 1,
+    streaming: true,
   });
 }
 
@@ -107,6 +108,7 @@ function makeFoundryChat(deployment, apiKey) {
     apiKey,
     timeout: 60_000,
     maxRetries: 1,
+    streaming: true,
     configuration: {
       baseURL: BASE_URL,
       defaultHeaders: { "api-key": apiKey },
@@ -121,6 +123,7 @@ function makeFoundryResponsesChat(deployment, apiKey) {
     timeout: 60_000,
     maxRetries: 1,
     useResponsesApi: true,
+    streaming: true,
     configuration: {
       baseURL: BASE_URL,
       defaultHeaders: { "api-key": apiKey },

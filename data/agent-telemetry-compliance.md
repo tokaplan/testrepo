@@ -6,11 +6,24 @@ Compliance of the four sample weather agents (LangChain Python, LangChain NodeJs
 
 🟢 **7** · 🟡 **1** · 🔴 **3**
 
+## Streaming coverage
+
+Each implementation exercises at least one streaming agent so that the matrix covers the SSE / streaming code path in addition to the regular request/response code path:
+
+| Distro | Streaming agent(s) | Mechanism |
+|---|---|---|
+| MAF .NET | Main, Verifier (Data agent runs non-stream as a tool) | `InProcessExecution.RunStreamingAsync` |
+| MAF Python | Main, Data, Verifier (whole workflow) | `workflow.run(prompt, stream=True)` |
+| LangChain Python | Verifier | `AzureChatOpenAI`/`ChatOpenAI(streaming=True)` |
+| LangChain NodeJs | Single agent per (deployment, protocol) | `@langchain/openai` chat client `streaming: true` |
+
+Only MAF .NET surfaces a `gen_ai.request.stream=true` (and `gen_ai.response.time_to_first_chunk`) attribute on its chat spans. The Python `agent_framework` chat instrumentation and the LangChain Python/NodeJs instrumentations do not emit a streaming flag at all (the underlying `openai` SDK call is invoked with `stream=True`, verified by HTTP-call monkey-patching, but the attribute is omitted on the span). This is the same "universal gap" listed in the gaps section below.
+
 ## Span-existence summary
 
 | Span type | Missing on |
 |---|---|
-| `chat` | Row 11 (MAF .NET Responses) |
+| `chat` | _(none — Row 11 fixed by commit `d5cae2e`)_ |
 | `invoke_agent` | Rows 4, 5, 6 (all LangChain NodeJs) |
 | `execute_tool` | none |
 | `HTTP` (actual API POST) | Rows 4, 5, 6 (LangChain NodeJs — no HTTP instrumentation) |
@@ -28,8 +41,8 @@ Compliance of the four sample weather agents (LangChain Python, LangChain NodeJs
 | 7 | MAF Python | `FoundryChatClient` | Foundry RAPI | 🟢 | OK | OK | OK | OK | **chat:** `gen_ai.provider.name` 🔴 non-spec `"azure.ai.foundry"` (Required → `azure.ai.inference`); `gen_ai.response.finish_reasons` 🟡 Missing; `gen_ai.conversation.id` 🟠 partial<br>**invoke_agent:** `gen_ai.provider.name` 🔴 non-spec `"microsoft.agent_framework"`; `gen_ai.agent.description` 🟡 Missing; `gen_ai.conversation.id` 🟠 Missing |
 | 8 | MAF Python | `OpenAIChatClient` | Foundry RAPI (responses) | 🟢 | OK | OK | OK | OK | **chat:** `gen_ai.response.finish_reasons` 🟡 Missing; `gen_ai.conversation.id` 🟠 partial<br>**invoke_agent:** `gen_ai.provider.name` 🔴 non-spec `"microsoft.agent_framework"`; `gen_ai.agent.description` 🟡 Missing; `gen_ai.conversation.id` 🟠 Missing |
 | 9 | MAF Python | `OpenAIChatCompletionClient` | Azure CAPI | 🟢 | OK | OK | OK | OK | **chat:** `gen_ai.conversation.id` 🟠 Missing _(no other row-specific gaps)_<br>**invoke_agent:** `gen_ai.provider.name` 🔴 non-spec `"microsoft.agent_framework"`; `gen_ai.agent.description` 🟡 Missing; `gen_ai.conversation.id` 🟠 Missing |
-| 10 | MAF .NET | `AzureOpenAIClient.GetChatClient` | Azure CAPI | 🟢 (caveat) | OK | OK | OK | OK | **chat:** `gen_ai.provider.name` 🔴 Missing — emits only deprecated `gen_ai.system="openai"`; `gen_ai.request.choice.count` 🟡 Missing; `gen_ai.conversation.id` 🟠 Missing<br>**invoke_agent:** all Required ✓; `gen_ai.conversation.id` 🟠 Missing; `gen_ai.agent.version` 🟡 Missing |
-| 11 | MAF .NET | `OpenAIClient.GetResponsesClient` | Foundry RAPI | 🔴 | OK | OK | **Missing** | OK | **chat:** 🔴 span entirely absent for Responses-API code path<br>**invoke_agent:** all Required ✓; `gen_ai.conversation.id` 🟠 Missing; `gen_ai.agent.version` 🟡 Missing |
+| 10 | MAF .NET | `AzureOpenAIClient.GetChatClient` | Azure CAPI | 🟢 | OK | OK | OK | OK | **chat:** `gen_ai.response.model` 🟡 Missing on streaming spans only (M.E.AI streaming TraceResponse gap); `gen_ai.request.choice.count` 🟡 Missing; `gen_ai.conversation.id` 🟠 Missing<br>**invoke_agent:** all Required ✓; `gen_ai.conversation.id` 🟠 Missing; `gen_ai.agent.version` 🟡 Missing |
+| 11 | MAF .NET | `OpenAIClient.GetResponsesClient` | Foundry RAPI | 🟢 | OK | OK | OK | OK | **chat:** `gen_ai.response.finish_reasons` 🟡 Missing on streaming spans only; `gen_ai.request.choice.count` 🟡 Missing; `gen_ai.conversation.id` 🟠 Missing<br>**invoke_agent:** all Required ✓; `gen_ai.conversation.id` 🟠 Missing; `gen_ai.agent.version` 🟡 Missing |
 
 **Severity legend:** 🔴 Required · 🟠 Conditionally Required · 🟡 Recommended
 
@@ -48,7 +61,7 @@ These attributes are absent from **every chat span** in every row. The per-row c
 
 Note: `gen_ai.usage.reasoning.output_tokens` is omitted from this list — the active model rotation contains only chat models (no reasoning models like `o4-mini` / `DeepSeek-R1`), so the attribute is correctly absent.
 
-Note: Conditional attrs `server.port`, `gen_ai.request.stream`, `gen_ai.output.type` are correctly omitted because their conditions (server.address set / streaming / non-text output) are not met in these scenarios.
+Note: Conditional attrs `server.port` and `gen_ai.output.type` are correctly omitted because their conditions (server.address set / non-text output) are not met in these scenarios. **`gen_ai.request.stream`** is now exercised on every implementation (see Streaming coverage section above), but only MAF .NET's instrumentation emits the attribute on chat spans; MAF Python's `agent_framework` and the LangChain Python/NodeJs MS-distro instrumentations omit it even when the underlying HTTP call uses `stream=true`.
 
 ## Notable observations
 
@@ -57,8 +70,8 @@ Note: Conditional attrs `server.port`, `gen_ai.request.stream`, `gen_ai.output.t
 - **Row 4** (LC Node Azure CAPI) has split-provider instrumentation: half the chat spans tag `gen_ai.provider.name="azure"` (LangChain instrumentor) and half `"openai"` (OpenAI SDK instrumentor). Different trace IDs, so not strict same-call dups, but parallel competing instrumentations.
 - **Row 7** (MAF Py FoundryChatClient) was previously missing the actual API POST in HTTP spans (only IMDS token GETs were captured). This was fixed by upgrading `agent-framework-foundry` from `1.2.2` to **`1.5.0`**. The Azure-Core pipeline now emits the `POST .../openai/v1/responses` span correctly.
 - **Row 9** (MAF Py Azure CAPI) is the only chat span with **no row-specific Required/Recommended gaps** beyond the universal set. A prior duplicate-span regression on this row was fixed by upgrading `microsoft-opentelemetry` from `1.1.0` to **`1.2.0`** (which suppresses a duplicate registration of `opentelemetry-instrumentation-openai-v2`).
-- **Row 10** (MAF .NET Azure CAPI) emits the *deprecated* `gen_ai.system="openai"` attribute instead of the renamed Required `gen_ai.provider.name`. The Azure.AI.OpenAI .NET SDK has not yet migrated to the new attribute name.
-- **Row 11** (MAF .NET Responses) emits no chat span at all on the Responses-API code path. The `OpenAI.Experimental.EnableOpenTelemetry` AppContext switch only wires Activity emission for the `ChatClient`, not the experimental `ResponsesClient`. Only the raw `POST .../openai/v1/responses` HTTP span (with no `gen_ai.*` attributes) is emitted.
+- **Row 10** (MAF .NET Azure CAPI) used to emit the deprecated `gen_ai.system="openai"` attribute instead of the renamed Required `gen_ai.provider.name`. **Fixed in commit `d5cae2e`** by registering the custom `ActivitySource` with the TracerProvider and removing the `OpenAI.Experimental.EnableOpenTelemetry` AppContext switch — `Microsoft.Extensions.AI.OpenTelemetryChatClient` now emits the spans with the new `gen_ai.provider.name="openai"`.
+- **Row 11** (MAF .NET Responses) used to emit no chat span at all on the Responses-API code path. **Fixed in commit `d5cae2e`** — `Microsoft.Extensions.AI.OpenTelemetryChatClient` instruments both the Chat Completions and Responses API code paths, and registering the custom `ActivitySource` made every previously-dropped chat span (streaming + non-streaming, completions + responses) visible. Remaining minor gap: `gen_ai.response.finish_reasons` is empty on streaming chat spans (M.E.AI streaming TraceResponse does not surface the finish reason yet).
 - **`gen_ai.request.choice.count`** is emitted only by MAF Python (30/30 chat spans). All other distros miss it (0/89).
 - **`gen_ai.agent.description`** is emitted only by MAF .NET (11/11 invoke_agent spans). Python frameworks miss it on every invoke_agent span.
 - **`gen_ai.agent.version`** and **`gen_ai.conversation.id`** are missing on every single invoke_agent span (43/43) across all 4 distros.
@@ -69,11 +82,12 @@ Note: Conditional attrs `server.port`, `gen_ai.request.stream`, `gen_ai.output.t
 | Pattern | Affected rows |
 |---|---|
 | `gen_ai.provider.name` Required-but-wrong-value | 1 (`"azure"`), 4 (split), 7 (`"azure.ai.foundry"`) |
-| `gen_ai.provider.name` Required-but-missing | 10 (uses deprecated `gen_ai.system` instead) |
-| Required span entirely absent | 4–6 (invoke_agent), 11 (chat) |
+| Required span entirely absent | 4–6 (invoke_agent) |
 | `gen_ai.usage.{input,output}_tokens` missing on chat | 3 |
 | `gen_ai.response.{id,model,finish_reasons}` missing on chat | 4, 5, 6 |
-| `gen_ai.request.choice.count` missing on chat | 1–6, 10 |
+| `gen_ai.response.model` missing on streaming chat only | 10 |
+| `gen_ai.response.finish_reasons` missing on streaming chat only | 11 |
+| `gen_ai.request.choice.count` missing on chat | 1–6, 10, 11 |
 | `gen_ai.conversation.id` missing on invoke_agent | all (1–11) |
 | `gen_ai.agent.description` missing on invoke_agent | 1–9 |
 | HTTP client spans missing | 4–6 |
@@ -115,6 +129,15 @@ foundry`) now carry the real versioned model name.
 | MAF Python (rows 8, 9 + row 7 chat attrs) | `sc2-mafpy-120757` |
 | MAF Python (row 7 HTTP — post-`agent-framework-foundry` 1.5.0) | `row7-mafpy-foundry-140129` |
 | MAF .NET | `sc2-mafnet-120757` |
+
+### Streaming-coverage reference run IDs
+
+| Distro | runId | Notes |
+|---|---|---|
+| LangChain Python | `stream-lcpy-205911` | Verifier chat model built with `streaming=True` |
+| LangChain NodeJs | `stream-lcnode-210022` | All chat models built with `streaming: true` |
+| MAF Python | `stream-mafpy-205811` | Whole workflow runs via `workflow.run(prompt, stream=True)` |
+| MAF .NET | `stream-mafnet-210325` | `InProcessExecution.RunStreamingAsync` (Main + Verifier stream) |
 
 ## Multi-agent topology (Main Agent attribution gap)
 
