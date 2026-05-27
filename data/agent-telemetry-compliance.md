@@ -129,9 +129,9 @@ Each agent runs against the same Azure Foundry / Azure OpenAI deployments and em
 
 | Distro | Package | Version |
 |---|---|---|
-| LangChain Python | `microsoft-opentelemetry` | `1.2.0` |
+| LangChain Python | `microsoft-opentelemetry` | `1.3.0` |
 | LangChain NodeJs | `@microsoft/opentelemetry` | `1.0.2` |
-| MAF Python | `microsoft-opentelemetry` | `1.2.0` |
+| MAF Python | `microsoft-opentelemetry` | `1.3.0` |
 | MAF Python | `agent-framework`, `agent-framework-core`, `agent-framework-foundry`, `agent-framework-openai` | `1.6.0` |
 | MAF .NET | `Microsoft.Agents.AI`, `Microsoft.Agents.AI.OpenAI`, `Microsoft.Agents.AI.Workflows` | `1.7.0` |
 | MAF .NET | `Microsoft.Extensions.AI.OpenAI` | `10.6.0` |
