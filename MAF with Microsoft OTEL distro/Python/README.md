@@ -1,5 +1,19 @@
 # WeatherChatMAFPython with Microsoft OpenTelemetry distro
 
+> # ✅ CANONICAL — MAF Python agent
+>
+> This is the **canonical MAF Python implementation** referenced by
+> [`/AGENTS.md`](../../AGENTS.md),
+> [`/CANONICAL-AGENTS.md`](../../CANONICAL-AGENTS.md), and the
+> compliance matrix [`/data/agent-telemetry-compliance.md`](../../data/agent-telemetry-compliance.md).
+>
+> Cloud-role name: `WeatherChatMAFPython-MS-Distro`. Entry point: `main.py`.
+>
+> Look-alike folders (`../../WeatherChatMAFPython\`) are **legacy** and
+> must not be used for matrix work — see their `> ⛔ LEGACY` banner.
+
+---
+
 Same MAF (Microsoft Agent Framework) Python agent as the sibling
 `WeatherChatMAFPython` project. Telemetry is supplied entirely by
 Microsoft's `microsoft-opentelemetry` distro — one call to

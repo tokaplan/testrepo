@@ -1,5 +1,20 @@
 # WeatherChatMAF with Microsoft OpenTelemetry distro
 
+> # ✅ CANONICAL — MAF .NET agent
+>
+> This is the **canonical MAF .NET implementation** referenced by
+> [`/AGENTS.md`](../../AGENTS.md),
+> [`/CANONICAL-AGENTS.md`](../../CANONICAL-AGENTS.md), and the
+> compliance matrix [`/data/agent-telemetry-compliance.md`](../../data/agent-telemetry-compliance.md).
+>
+> Cloud-role name: `WeatherChatMAF-MS-Distro`. Entry point: `Program.cs`.
+> Project: `WeatherChatMAF.MSDistro.csproj`.
+>
+> Look-alike folders (`../../WeatherChatMAF\`) are **legacy** and must
+> not be used for matrix work — see their `> ⛔ LEGACY` banner.
+
+---
+
 Same MAF (Microsoft Agent Framework) console app as the sibling
 `WeatherChatMAF` .NET project. Telemetry is supplied entirely by
 Microsoft's `Microsoft.OpenTelemetry` distro

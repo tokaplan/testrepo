@@ -1,5 +1,20 @@
 # LangChainNodeJs with Microsoft OpenTelemetry distro
 
+> # ✅ CANONICAL — LangChain NodeJs agent
+>
+> This is the **canonical LangChain NodeJs implementation** referenced by
+> [`/AGENTS.md`](../../AGENTS.md),
+> [`/CANONICAL-AGENTS.md`](../../CANONICAL-AGENTS.md), and the
+> compliance matrix [`/data/agent-telemetry-compliance.md`](../../data/agent-telemetry-compliance.md).
+>
+> Cloud-role name: `LangChainNodeJs-MS-Distro`. Entry point: `main.js`.
+> Telemetry bootstrap: `telemetry.mjs` wires `@microsoft/opentelemetry`.
+>
+> Look-alike folder (`../../LangChainNodeJs\`) is **legacy** and must
+> not be used for matrix work — see its `> ⛔ LEGACY` banner.
+
+---
+
 Same agent as the sibling `LangChainNodeJs` project. Telemetry is supplied
 by an out-of-tree instrumentation setup - this folder ships only the agent
 code itself.

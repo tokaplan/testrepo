@@ -1,5 +1,20 @@
 # LangChainPython with Microsoft OpenTelemetry distro
 
+> # ✅ CANONICAL — LangChain Python agent
+>
+> This is the **canonical LangChain Python implementation** referenced by
+> [`/AGENTS.md`](../../AGENTS.md),
+> [`/CANONICAL-AGENTS.md`](../../CANONICAL-AGENTS.md), and the
+> compliance matrix [`/data/agent-telemetry-compliance.md`](../../data/agent-telemetry-compliance.md).
+>
+> Cloud-role name: `WeatherChatLangChain-MS-Distro`. Entry point: `main.py`.
+>
+> Look-alike folders (`../../LangChainPython\`,
+> `../../WeatherChatPython\`) are **legacy** and must not be used for
+> matrix work — see their `> ⛔ LEGACY` banner.
+
+---
+
 Same agent as the sibling `LangChainPython` project. Telemetry is supplied
 by an out-of-tree instrumentation setup - this folder ships only the agent
 code itself.

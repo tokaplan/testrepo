@@ -1,5 +1,25 @@
 # LangChainNodeJs
 
+> # ⛔ LEGACY — DO NOT USE FOR MATRIX / COMPLIANCE WORK
+>
+> This folder is **superseded** by
+> [`LangChain with Microsoft OTEL distro\NodeJs\`](../LangChain%20with%20Microsoft%20OTEL%20distro/NodeJs/).
+> The canonical LangChain NodeJs agent (the one referenced by the
+> compliance matrix and by `CANONICAL-AGENTS.md` / `AGENTS.md`) lives
+> there.
+>
+> This folder is kept only as a reference for the original AKS App
+> Monitoring auto-instrumentation deployment. **Do not** run it for
+> validation, do not edit it as part of matrix updates, do not commit
+> telemetry from it.
+>
+> See [`/AGENTS.md`](../AGENTS.md) for the full canonical-vs-legacy list
+> and the pre-flight checklist.
+
+---
+
+## Historical notes (auto-instrumentation port)
+
 LangChain.js port of `WeatherChatMAF`. Hits the same Azure AI Foundry
 endpoint, the same deployments, uses the same `get_current_weather` tool.
 
