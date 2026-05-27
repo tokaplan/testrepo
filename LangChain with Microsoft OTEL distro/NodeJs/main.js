@@ -32,15 +32,12 @@ const DEPLOYMENT_NAMES = [
   "deployment-gpt-5.4-mini",
   "deployment-gpt-4o",
   "deployment-gpt-4o-mini",
-  "deployment-o4-mini",
   "deployment-Phi-4",
-  "deployment-DeepSeek-R1",
   "deployment-Llama-3.3-70B-Instruct",
 ];
 
 const NO_TOOL_DEPLOYMENTS = new Set([
   "deployment-Phi-4",
-  "deployment-DeepSeek-R1",
 ]);
 
 const SERVICE_NAME = "LangChainNodeJs-MS-Distro";

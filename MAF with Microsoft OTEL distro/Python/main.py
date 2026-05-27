@@ -58,7 +58,7 @@ AZURE_OPENAI_ENDPOINT = "https://alkap-mc9jji6o-eastus2.cognitiveservices.azure.
 AGENT_DEPLOYMENTS = {
     "data":     "deployment-gpt-4o-mini",   # tool-caller (cheap, supports tools)
     "main":     "deployment-gpt-5.4-mini",  # orchestrator (smart, supports tools)
-    "verifier": "deployment-o4-mini",       # reasoning judge (no tools)
+    "verifier": "deployment-gpt-4o",        # judge (chat model, no tools)
 }
 
 SERVICE_NAME = "WeatherChatMAFPython-MS-Distro"

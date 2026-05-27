@@ -32,7 +32,7 @@ const string azureOpenAIEndpoint = "https://alkap-mc9jji6o-eastus2.cognitiveserv
 // chat spans carry their own gen_ai.request.model / gen_ai.response.model.
 const string dataDeployment     = "deployment-gpt-4o-mini";   // tool-caller
 const string mainDeployment     = "deployment-gpt-5.4-mini";  // orchestrator
-const string verifierDeployment = "deployment-o4-mini";       // reasoning judge
+const string verifierDeployment = "deployment-gpt-4o";        // judge (chat model)
 
 string runId = args.Length > 0 ? args[0] : Guid.NewGuid().ToString();
 const string ServiceName = "WeatherChatMAF-MS-Distro";
