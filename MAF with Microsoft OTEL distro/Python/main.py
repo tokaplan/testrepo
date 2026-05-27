@@ -54,7 +54,7 @@ AZURE_OPENAI_ENDPOINT = "https://alkap-mc9jji6o-eastus2.cognitiveservices.azure.
 
 # Multi-agent topology needs tool-capable models, so we reduce to one cheap
 # deployment that supports all three protocols (responses / foundry / completions).
-DEPLOYMENT = "deployment-gpt-5.4-mini"
+DEPLOYMENT = os.environ.get("DEPLOYMENT", "deployment-gpt-5.4-mini")
 
 SERVICE_NAME = "WeatherChatMAFPython-MS-Distro"
 
@@ -82,6 +82,7 @@ class TestAgentSpanProcessor(BaseSpanProcessor):
     def on_start(self, span, parent_context=None):
         span.set_attribute("test.agent", self._agent_name)
         span.set_attribute("test.runId", self._run_id)
+        span.set_attribute("test.deployment", DEPLOYMENT)
         protocol = self._protocol_ctx.get("")
         if protocol:
             span.set_attribute("test.protocol", protocol)
