@@ -45,7 +45,8 @@ These attributes are absent from **every chat span** in every row. The per-row c
 - `gen_ai.request.frequency_penalty`
 - `gen_ai.request.presence_penalty`
 - `gen_ai.request.stop_sequences`
-- `gen_ai.usage.reasoning.output_tokens` (expected on reasoning models `o4-mini`, `DeepSeek-R1`)
+
+Note: `gen_ai.usage.reasoning.output_tokens` is omitted from this list — the active model rotation contains only chat models (no reasoning models like `o4-mini` / `DeepSeek-R1`), so the attribute is correctly absent.
 
 Note: Conditional attrs `server.port`, `gen_ai.request.stream`, `gen_ai.output.type` are correctly omitted because their conditions (server.address set / streaming / non-text output) are not met in these scenarios.
 
@@ -91,7 +92,7 @@ Each agent runs against the same Azure Foundry / Azure OpenAI deployments and em
 | MAF Python | `agent-framework`, `agent-framework-core`, `agent-framework-foundry`, `agent-framework-openai` | `1.6.0` |
 | MAF .NET | `Microsoft.Agents.AI`, `Microsoft.Agents.AI.OpenAI`, `Microsoft.Agents.AI.Workflows` | `1.7.0` |
 | MAF .NET | `Microsoft.Extensions.AI.OpenAI` | `10.6.0` |
-| MAF .NET | `Microsoft.OpenTelemetry` | `1.0.2` |
+| MAF .NET | `Microsoft.OpenTelemetry` | `1.0.3` |
 
 ### Resolved issue: `gen_ai.response.model` on RAPI returned deployment alias
 
@@ -178,7 +179,7 @@ End-state: every span in a trace is tagged with the **outermost agent** of its b
 | Distro | Distro package | OnStart inheritance (children) | OnEnd self-promotion (root `invoke_agent`) | All 4 spec attributes emitted? | Verdict |
 |---|---|:-:|:-:|:-:|---|
 | MAF Python | `microsoft-opentelemetry 1.2.0` | ✅ works (`name`, `id` via `gen_ai.agent.*` fallback) | ❌ root Main + Verifier `invoke_agent` spans never get `main_agent.*` | ⚠ partial — `name` + `id` present, `version` 0/61, `conversation_id` 2/61 | **Partial** — children attributed via parent's `gen_ai.agent.name`, but root `invoke_agent` spans are unattributed. |
-| MAF .NET | `Microsoft.OpenTelemetry 1.0.2` | ❌ no `microsoft.gen_ai.main_agent.*` on any span | ❌ no `microsoft.gen_ai.main_agent.*` on any span | ❌ none | **Not implemented** — the SpanProcessor described in the spec is not registered in this distro version. |
+| MAF .NET | `Microsoft.OpenTelemetry 1.0.3` | ❌ no `microsoft.gen_ai.main_agent.*` on any span | ❌ no `microsoft.gen_ai.main_agent.*` on any span | ❌ none | **Not implemented** — the SpanProcessor described in the spec is not registered in this distro version. |
 | LangChain Python | `microsoft-opentelemetry 1.2.0` | ❌ no children attributed | ❌ no roots attributed | ❌ none | **Broken upstream** — the distro's SpanProcessor *is* registered (same package as MAF Py) but the LangChain `invoke_agent` spans have an empty `gen_ai.agent.name` customDimension, so OnStart has nothing to copy and OnEnd has nothing to promote. |
 | LangChain NodeJs | `@microsoft/opentelemetry 1.0.2` | n/a — no `invoke_agent` spans emitted at all (rows 4–6) | n/a | ❌ none | **Moot / not testable** — the trace lacks `invoke_agent` spans entirely. |
 
