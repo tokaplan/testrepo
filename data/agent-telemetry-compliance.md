@@ -88,8 +88,22 @@ Each agent runs against the same Azure Foundry / Azure OpenAI deployments and em
 | LangChain Python | `microsoft-opentelemetry` | `1.2.0` |
 | LangChain NodeJs | `@microsoft/opentelemetry` | `1.0.2` |
 | MAF Python | `microsoft-opentelemetry` | `1.2.0` |
-| MAF Python | `agent-framework`, `agent-framework-foundry`, `agent-framework-openai` | `1.5.0` |
+| MAF Python | `agent-framework`, `agent-framework-core`, `agent-framework-foundry`, `agent-framework-openai` | `1.6.0` |
+| MAF .NET | `Microsoft.Agents.AI`, `Microsoft.Agents.AI.OpenAI`, `Microsoft.Agents.AI.Workflows` | `1.7.0` |
+| MAF .NET | `Microsoft.Extensions.AI.OpenAI` | `10.6.0` |
 | MAF .NET | `Microsoft.OpenTelemetry` | `1.0.2` |
+
+### Resolved issue: `gen_ai.response.model` on RAPI returned deployment alias
+
+In older runs against the Foundry Responses API (run `sc2-*` from ~2 weeks earlier on
+MAF Py `agent-framework 1.2.2` and LC Py `microsoft-opentelemetry 1.2.0`), the chat
+span's `gen_ai.response.model` carried the **deployment alias** (e.g.
+`"deployment-gpt-5.4-mini"`) instead of the **real versioned model** (e.g.
+`"gpt-5.4-mini-2026-03-17"`). CAPI paths were unaffected. The fix landed
+server-side in the Foundry Responses API (and was also defensively addressed in MAF
+1.6.0 Python / 1.7.0 .NET). Verified in run `rmodel-mafpy-after-175542`: all chat
+spans on all three MAF Python protocols (`completions`, `responses`, `RAPI via
+foundry`) now carry the real versioned model name.
 
 ### Reference run IDs (App Insights)
 

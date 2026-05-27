@@ -1,3 +1,4 @@
-microsoft-opentelemetry
-agent-framework
-agent-framework-openai
+microsoft-opentelemetry>=1.2.0
+agent-framework>=1.6.0
+agent-framework-openai>=1.6.0
+agent-framework-foundry>=1.6.0
