@@ -8,11 +8,13 @@
  *     +- MainAgent (createReactAgent, tools=[weatherDataAgent])
  *     |  +- weatherDataAgent  <-- tool() wrapping inner DataAgent (agent-as-tool)
  *     |     +- DataAgent (createReactAgent, tools=[getCurrentWeather])
- *     +- VerifierAgent (chat.invoke, no tools, streaming)
+ *     +- VerifierAgent (createReactAgent, tools=[], streaming)
  *
  * The Verifier agent's chat client is built with `streaming: true` so that at
  * least one sub-agent uses streaming while the other two stay non-streaming,
- * mirroring the sibling LC Python multi-agent flow.
+ * mirroring the sibling LC Python multi-agent flow. All three agents are
+ * wrapped with createReactAgent so each emits its own invoke_agent span
+ * (parity with LC Python's create_agent(...) and MAF's Agent(...)).
  */
 
 import { AzureChatOpenAI, ChatOpenAI } from "@langchain/openai";
@@ -188,11 +190,13 @@ function extractText(content) {
 // ---------------------------------------------------------------------------
 function buildWorkflow(dataChat, mainChat, verifierChat, protocolTag) {
   // Per-workflow agent IDs so each run gets fresh, distinct gen_ai.agent.id
-  // values for Data and Main, propagated through per-invoke RunnableConfig
-  // metadata. (The JS distro's LangChain instrumentor reads gen_ai.agent.name
-  // from the LangGraph run name, set here via createReactAgent({ name }).)
+  // values for Data, Main, and Verifier, propagated through per-invoke
+  // RunnableConfig metadata. (The JS distro's LangChain instrumentor reads
+  // gen_ai.agent.name from the LangGraph run name, set here via
+  // createReactAgent({ name }).)
   const dataAgentId = randomUUID();
   const mainAgentId = randomUUID();
+  const verifierAgentId = randomUUID();
   const dataMeta = {
     agent_id: dataAgentId,
     agent_description: DATA_AGENT_DESCRIPTION,
@@ -200,6 +204,10 @@ function buildWorkflow(dataChat, mainChat, verifierChat, protocolTag) {
   const mainMeta = {
     agent_id: mainAgentId,
     agent_description: MAIN_AGENT_DESCRIPTION,
+  };
+  const verifierMeta = {
+    agent_id: verifierAgentId,
+    agent_description: VERIFIER_AGENT_DESCRIPTION,
   };
 
   // Inner data agent — has the raw weather tool.
@@ -260,6 +268,16 @@ function buildWorkflow(dataChat, mainChat, verifierChat, protocolTag) {
     description: MAIN_AGENT_DESCRIPTION,
   });
 
+  // Verifier agent — no tools, but wrapped with createReactAgent so it emits
+  // its own invoke_agent span (parity with LC Python's create_agent and
+  // MAF's Agent). The underlying chat client is streaming.
+  const verifierAgent = createReactAgent({
+    llm: verifierChat,
+    tools: [],
+    name: `VerifierAgent-${protocolTag}`,
+    description: VERIFIER_AGENT_DESCRIPTION,
+  });
+
   async function mainNode(state, config) {
     const before = state.messages.length;
     const invokeConfig = {
@@ -278,12 +296,25 @@ function buildWorkflow(dataChat, mainChat, verifierChat, protocolTag) {
     return { messages: newMsgs };
   }
 
-  async function verifyNode(state) {
-    const result = await verifierChat.invoke([
-      new SystemMessage(VERIFIER_INSTRUCTIONS),
-      ...state.messages,
-    ]);
-    return { messages: [result] };
+  async function verifyNode(state, config) {
+    const before = state.messages.length;
+    const invokeConfig = {
+      ...(config ?? {}),
+      metadata: { ...(config?.metadata ?? {}), ...verifierMeta },
+    };
+    const result = await verifierAgent.invoke(
+      {
+        messages: [
+          new SystemMessage(VERIFIER_INSTRUCTIONS),
+          ...state.messages,
+        ],
+      },
+      invokeConfig
+    );
+    // Like mainNode: skip the system prompt + the (before) state messages we
+    // passed in, returning only the verifier's new AI message(s).
+    const newMsgs = (result.messages ?? []).slice(before + 1);
+    return { messages: newMsgs };
   }
 
   const graph = new StateGraph(MessagesAnnotation)
