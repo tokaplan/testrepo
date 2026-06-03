@@ -33,6 +33,7 @@ import { z } from "zod";
 
 import { randomUUID } from "node:crypto";
 import process from "node:process";
+import { shutdownMicrosoftOpenTelemetry } from "@microsoft/opentelemetry";
 
 const ENDPOINT =
   "https://alkap-mc9jji6o-eastus2.services.ai.azure.com/api/projects/alkap-mc9jji6o-eastus2_project";
@@ -51,6 +52,16 @@ const AGENT_DEPLOYMENTS = {
 
 const SERVICE_NAME = "LangChainNodeJs-MS-Distro";
 const USER_PROMPT = "What's the weather like in Seattle and San Francisco?";
+
+const DATA_AGENT_DESCRIPTION =
+  "Weather data sub-agent that looks up current conditions for one or more " +
+  "cities via the get_current_weather tool.";
+const MAIN_AGENT_DESCRIPTION =
+  "Main weather assistant that delegates lookups to the weather data " +
+  "sub-agent and summarizes the result for the end user.";
+const VERIFIER_AGENT_DESCRIPTION =
+  "Verifier agent that sanity-checks the main assistant's reply for " +
+  "hallucinated cities, impossible weather, and missing cities.";
 
 const DATA_INSTRUCTIONS =
   "You are a weather data agent. You look up weather information for " +
@@ -175,22 +186,49 @@ function extractText(content) {
 // ---------------------------------------------------------------------------
 // Multi-agent workflow per protocol
 // ---------------------------------------------------------------------------
-function buildWorkflow(dataChat, mainChat, verifierChat) {
+function buildWorkflow(dataChat, mainChat, verifierChat, protocolTag) {
+  // Per-workflow agent IDs so each run gets fresh, distinct gen_ai.agent.id
+  // values for Data and Main, propagated through per-invoke RunnableConfig
+  // metadata. (The JS distro's LangChain instrumentor reads gen_ai.agent.name
+  // from the LangGraph run name, set here via createReactAgent({ name }).)
+  const dataAgentId = randomUUID();
+  const mainAgentId = randomUUID();
+  const dataMeta = {
+    agent_id: dataAgentId,
+    agent_description: DATA_AGENT_DESCRIPTION,
+  };
+  const mainMeta = {
+    agent_id: mainAgentId,
+    agent_description: MAIN_AGENT_DESCRIPTION,
+  };
+
   // Inner data agent — has the raw weather tool.
   const dataAgent = createReactAgent({
     llm: dataChat,
     tools: [getCurrentWeather],
+    name: `WeatherDataAgent-${protocolTag}`,
+    description: DATA_AGENT_DESCRIPTION,
   });
 
   // Wrap data agent as a tool so the main agent can delegate to it.
   const weatherDataAgent = tool(
-    async ({ cities }) => {
-      const result = await dataAgent.invoke({
-        messages: [
-          new SystemMessage(DATA_INSTRUCTIONS),
-          new HumanMessage(`Look up weather for: ${cities}`),
-        ],
-      });
+    async ({ cities }, config) => {
+      // Override the parent (main) agent's metadata with this nested agent's
+      // own id/description so its invoke_agent span carries the data role's
+      // identity, not main's.
+      const nestedConfig = {
+        ...(config ?? {}),
+        metadata: { ...(config?.metadata ?? {}), ...dataMeta },
+      };
+      const result = await dataAgent.invoke(
+        {
+          messages: [
+            new SystemMessage(DATA_INSTRUCTIONS),
+            new HumanMessage(`Look up weather for: ${cities}`),
+          ],
+        },
+        nestedConfig
+      );
       const messages = result.messages ?? [];
       for (let i = messages.length - 1; i >= 0; i--) {
         const msg = messages[i];
@@ -218,13 +256,22 @@ function buildWorkflow(dataChat, mainChat, verifierChat) {
   const mainAgent = createReactAgent({
     llm: mainChat,
     tools: [weatherDataAgent],
+    name: `MainWeatherAgent-${protocolTag}`,
+    description: MAIN_AGENT_DESCRIPTION,
   });
 
-  async function mainNode(state) {
+  async function mainNode(state, config) {
     const before = state.messages.length;
-    const result = await mainAgent.invoke({
-      messages: [new SystemMessage(MAIN_INSTRUCTIONS), ...state.messages],
-    });
+    const invokeConfig = {
+      ...(config ?? {}),
+      metadata: { ...(config?.metadata ?? {}), ...mainMeta },
+    };
+    const result = await mainAgent.invoke(
+      {
+        messages: [new SystemMessage(MAIN_INSTRUCTIONS), ...state.messages],
+      },
+      invokeConfig
+    );
     // mainAgent.invoke returns the full message list including our system
     // prompt + prior user message; skip the (before+1) we passed in.
     const newMsgs = (result.messages ?? []).slice(before + 1);
@@ -276,7 +323,7 @@ function buildWorkflows(apiKey) {
       const verifierChat = make(AGENT_DEPLOYMENTS.verifier, true);
       workflows.push({
         protocol,
-        graph: buildWorkflow(dataChat, mainChat, verifierChat),
+        graph: buildWorkflow(dataChat, mainChat, verifierChat, protocol),
       });
     } catch (ex) {
       console.log(`[build] failed ${protocol}: ${ex}`);
@@ -391,8 +438,21 @@ async function main() {
 }
 
 main()
-  .then((code) => process.exit(code ?? 0))
-  .catch((err) => {
+  .then(async (code) => {
+    // Flush any pending spans before exit. Without this, the final protocol's
+    // spans (which run last under SEQUENTIAL=1) can be dropped if the
+    // BatchSpanProcessor hasn't flushed yet.
+    try {
+      await shutdownMicrosoftOpenTelemetry();
+    } catch (err) {
+      console.error("[main] shutdown error:", err);
+    }
+    process.exit(code ?? 0);
+  })
+  .catch(async (err) => {
     console.error(err);
+    try {
+      await shutdownMicrosoftOpenTelemetry();
+    } catch {}
     process.exit(1);
   });

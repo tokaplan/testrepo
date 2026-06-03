@@ -24,7 +24,7 @@ Compliance of the four sample weather agents (LangChain Python, LangChain NodeJs
 
 ## Score
 
-🟢 **7** · 🟡 **3** · 🔴 **1**
+🟢 **7** · 🟡 **4** · 🔴 **0**
 
 ## Streaming coverage
 
@@ -52,9 +52,9 @@ Only MAF .NET surfaces a `gen_ai.request.stream=true` (and `gen_ai.response.time
 
 | Span type | Missing on |
 |---|---|
-| `chat` | Row 6 (LangChain NodeJs `useResponsesApi`) — only the Verifier (direct `chat.invoke`) emits a chat span; sub-agent calls made through `createReactAgent` produce no chat spans when the underlying client uses `useResponsesApi: true` |
-| `invoke_agent` | Row 6 only (Rows 4, 5 gained `invoke_agent` via multi-agent refactor — see commit `29be769`) |
-| `execute_tool` | Row 6 (intermittent — `weather_data_agent` tool span is sometimes lost under `useResponsesApi`) |
+| `chat` | _(none)_ — row 6's chat-span gap under `useResponsesApi` closed in `@microsoft/opentelemetry 1.1.0` |
+| `invoke_agent` | _(none)_ — row 6's invoke_agent gap closed in `@microsoft/opentelemetry 1.1.0` |
+| `execute_tool` | _(none)_ — row 6's intermittent loss closed in `@microsoft/opentelemetry 1.1.0` |
 | `HTTP` (actual API POST) | Rows 4, 5, 6 (LangChain NodeJs — no HTTP instrumentation) |
 
 ## Full matrix
@@ -64,9 +64,9 @@ Only MAF .NET surfaces a `gen_ai.request.stream=true` (and `gen_ai.response.time
 | 1 | LangChain Python | `AzureChatOpenAI` | Azure CAPI | 🟢 | OK | OK | OK | OK | **chat:** `gen_ai.provider.name` 🔴 non-spec `"azure"`<br>**invoke_agent:** `gen_ai.provider.name` 🔴 non-spec `"azure"`; `gen_ai.conversation.id` 🟠 Missing |
 | 2 | LangChain Python | `ChatOpenAI` | Foundry CAPI | 🟢 | OK | OK | OK | OK | **chat:** _(no row-specific gaps beyond the universal set)_<br>**invoke_agent:** `gen_ai.conversation.id` 🟠 Missing |
 | 3 | LangChain Python | `ChatOpenAI` (`useResponsesApi`) | Foundry RAPI | 🟡 | OK | OK | OK | OK | **chat:** `gen_ai.response.model` 🟡 reports deployment alias (e.g. `deployment-gpt-5.4-mini`) instead of the served model snapshot (e.g. `gpt-5.4-mini-2026-03-17`) — Foundry returns the snapshot only in the `x-ms-served-model` response header, and `openai-python` does not surface it to the consumer<br>**invoke_agent:** `gen_ai.conversation.id` 🟠 Missing |
-| 4 | LangChain NodeJs | `AzureChatOpenAI` | Azure CAPI | 🟡 | OK | OK | OK | **Missing** | **chat:** `gen_ai.provider.name` 🔴 split `"azure"`/`"openai"` (dual instrumentation); `gen_ai.response.id` 🟡 Missing; `gen_ai.response.model` 🟡 Missing; `gen_ai.response.finish_reasons` 🟡 Missing; `gen_ai.request.choice.count` 🟡 Missing<br>**invoke_agent:** ✅ now emitted via `createReactAgent` after the multi-agent refactor (`29be769`); `gen_ai.agent.name`/`id`/`description` 🟠 Missing; `gen_ai.conversation.id` 🟠 Missing<br>**execute_tool:** `gen_ai.tool.description` 🟡 Missing |
-| 5 | LangChain NodeJs | `ChatOpenAI` | Foundry CAPI | 🟡 | OK | OK | OK | **Missing** | **chat:** `gen_ai.response.id` 🟡 Missing; `gen_ai.response.model` 🟡 Missing; `gen_ai.response.finish_reasons` 🟡 Missing; `gen_ai.request.choice.count` 🟡 Missing<br>**invoke_agent:** ✅ now emitted via `createReactAgent` after the multi-agent refactor (`29be769`); `gen_ai.agent.name`/`id`/`description` 🟠 Missing; `gen_ai.conversation.id` 🟠 Missing<br>**execute_tool:** `gen_ai.tool.description` 🟡 Missing |
-| 6 | LangChain NodeJs | `ChatOpenAI` (`useResponsesApi`) | Foundry RAPI | 🔴 | **Partial** | **Missing** | **Partial** | **Missing** | **chat:** 🔴 only the Verifier (direct `chat.invoke`) emits a chat span; the 4 sub-agent calls inside `createReactAgent` (Main planning, Main synthesis, Data ×2) produce no chat spans at all when `useResponsesApi: true` — LangChain JS instrumentation does not hook the Responses-API path inside `createReactAgent`. Same `gen_ai.response.*` / `choice.count` gaps as rows 4/5.<br>**invoke_agent:** 🔴 span entirely absent (Responses-API + `createReactAgent` combination)<br>**execute_tool:** `weather_data_agent` tool span intermittently lost; `get_current_weather` never emitted (inner data agent's tool call is silent); `gen_ai.tool.description` 🟡 Missing |
+| 4 | LangChain NodeJs | `AzureChatOpenAI` | Azure CAPI | 🟡 | OK | OK | OK | **Missing** | **chat:** `gen_ai.provider.name` 🔴 non-spec `"azure"`; `gen_ai.response.finish_reasons` 🟡 Missing; `gen_ai.request.choice.count` 🟡 Missing<br>**invoke_agent:** `gen_ai.agent.id`/`description` 🟠 Missing; `gen_ai.conversation.id` 🟠 Missing<br>**execute_tool:** `gen_ai.tool.description` 🟡 Missing |
+| 5 | LangChain NodeJs | `ChatOpenAI` | Foundry CAPI | 🟡 | OK | OK | OK | **Missing** | **chat:** `gen_ai.response.finish_reasons` 🟡 Missing; `gen_ai.request.choice.count` 🟡 Missing<br>**invoke_agent:** `gen_ai.agent.id`/`description` 🟠 Missing; `gen_ai.conversation.id` 🟠 Missing<br>**execute_tool:** `gen_ai.tool.description` 🟡 Missing |
+| 6 | LangChain NodeJs | `ChatOpenAI` (`useResponsesApi`) | Foundry RAPI | 🟡 | OK | OK | OK | **Missing** | **chat:** `gen_ai.response.model` 🟡 reports deployment alias (e.g. `deployment-gpt-5.4-mini`) instead of the served model snapshot — Foundry RAPI returns the snapshot only via the `x-ms-served-model` response header, which the `openai` JS SDK does not surface (same as row 3); `gen_ai.response.finish_reasons` 🟡 Missing; `gen_ai.request.choice.count` 🟡 Missing<br>**invoke_agent:** `gen_ai.agent.id`/`description` 🟠 Missing; `gen_ai.conversation.id` 🟠 Missing<br>**execute_tool:** `gen_ai.tool.description` 🟡 Missing |
 | 7 | MAF Python | `FoundryChatClient` | Foundry RAPI | 🟢 | OK | OK | OK | OK | **chat:** `gen_ai.provider.name` 🔴 non-spec `"azure.ai.foundry"` (Required → `azure.ai.inference`); `gen_ai.response.finish_reasons` 🟡 Missing; `gen_ai.conversation.id` 🟠 partial<br>**invoke_agent:** `gen_ai.provider.name` 🔴 non-spec `"microsoft.agent_framework"`; `gen_ai.conversation.id` 🟠 Missing |
 | 8 | MAF Python | `OpenAIChatClient` | Foundry RAPI (responses) | 🟢 | OK | OK | OK | OK | **chat:** `gen_ai.response.finish_reasons` 🟡 Missing; `gen_ai.conversation.id` 🟠 partial<br>**invoke_agent:** `gen_ai.provider.name` 🔴 non-spec `"microsoft.agent_framework"`; `gen_ai.conversation.id` 🟠 Missing |
 | 9 | MAF Python | `OpenAIChatCompletionClient` | Azure CAPI | 🟢 | OK | OK | OK | OK | **chat:** `gen_ai.conversation.id` 🟠 Missing _(no other row-specific gaps)_<br>**invoke_agent:** `gen_ai.provider.name` 🔴 non-spec `"microsoft.agent_framework"`; `gen_ai.conversation.id` 🟠 Missing |
@@ -95,14 +95,13 @@ Note: Conditional attrs `server.port` and `gen_ai.output.type` are correctly omi
 ## Notable observations
 
 - **LangChain NodeJs has zero HTTP client spans** across all 3 rows — the OpenTelemetry NodeJS distro is not auto-instrumenting outgoing HTTP for the `openai` JS SDK.
-- **LangChain NodeJs emits no `invoke_agent` spans** — the JS LangChain instrumentation has no agent-span support yet.
-- **Row 4** (LC Node Azure CAPI) has split-provider instrumentation: half the chat spans tag `gen_ai.provider.name="azure"` (LangChain instrumentor) and half `"openai"` (OpenAI SDK instrumentor). Different trace IDs, so not strict same-call dups, but parallel competing instrumentations.
+- **`@microsoft/opentelemetry` 1.1.0 closed several LC NodeJs gaps** (vs. 1.0.2): `chat` spans now emit `gen_ai.response.id` and `gen_ai.response.model` (rows 4–6); row 4's split `gen_ai.provider.name` (`"azure"`/`"openai"` dual instrumentation) is gone — chat spans single-emit with `"azure"`; row 6's `useResponsesApi: true` path now emits `chat` (5/5), `invoke_agent` (3/3), and `execute_tool` (3/3) reliably (was Partial/Missing); `microsoft.gen_ai.main_agent.*` attribution is now implemented (28/29 spans across all 3 protocols carry the main-agent identity).
 - **Row 7** (MAF Py FoundryChatClient) was previously missing the actual API POST in HTTP spans (only IMDS token GETs were captured). This was fixed by upgrading `agent-framework-foundry` from `1.2.2` to **`1.5.0`**. The Azure-Core pipeline now emits the `POST .../openai/v1/responses` span correctly.
 - **Row 9** (MAF Py Azure CAPI) is the only chat span with **no row-specific Required/Recommended gaps** beyond the universal set. A prior duplicate-span regression on this row was fixed by upgrading `microsoft-opentelemetry` from `1.1.0` to **`1.2.0`** (which suppresses a duplicate registration of `opentelemetry-instrumentation-openai-v2`).
 - **Row 10** (MAF .NET Azure CAPI) used to emit the deprecated `gen_ai.system="openai"` attribute instead of the renamed Required `gen_ai.provider.name`. **Fixed in commit `d5cae2e`** by registering the custom `ActivitySource` with the TracerProvider and removing the `OpenAI.Experimental.EnableOpenTelemetry` AppContext switch — `Microsoft.Extensions.AI.OpenTelemetryChatClient` now emits the spans with the new `gen_ai.provider.name="openai"`.
 - **Row 11** (MAF .NET Responses) used to emit no chat span at all on the Responses-API code path. **Fixed in commit `d5cae2e`** — `Microsoft.Extensions.AI.OpenTelemetryChatClient` instruments both the Chat Completions and Responses API code paths, and registering the custom `ActivitySource` made every previously-dropped chat span (streaming + non-streaming, completions + responses) visible. Remaining minor gap: `gen_ai.response.finish_reasons` is empty on streaming chat spans (M.E.AI streaming TraceResponse does not surface the finish reason yet).
 - **`gen_ai.request.choice.count`** is emitted by MAF Python (30/30 chat spans) and LangChain Python (15/15 chat spans across rows 1–3, after `langchain` 1.x and `microsoft-opentelemetry` 1.3.0). LangChain NodeJs and MAF .NET still omit it.
-- **`gen_ai.agent.{name,id,description}`** are now emitted on `invoke_agent` spans by all 3 Python rows (1–3) and MAF .NET (10–11) after both Python agents construct each agent with explicit `name=` / `description=` (and, for LC Py, inject `agent_id` / `agent_description` per-invoke via `RunnableConfig.metadata` — see "LangGraph metadata-wipe note" below). LangChain NodeJs (rows 4–6) still omits them.
+- **`gen_ai.agent.{name,id,description}`** are now emitted on `invoke_agent` spans by all 3 Python rows (1–3) and MAF .NET (10–11) after both Python agents construct each agent with explicit `name=` / `description=` (and, for LC Py, inject `agent_id` / `agent_description` per-invoke via `RunnableConfig.metadata` — see "LangGraph metadata-wipe note" below). LangChain NodeJs (rows 4–6) now emits `gen_ai.agent.name` on inner Main/Data `invoke_agent` spans (set via `createReactAgent({ name })`); the outer LangGraph `StateGraph` wrapper still emits as `gen_ai.agent.name="LangGraph"`. `gen_ai.agent.id` and `gen_ai.agent.description` remain missing on NodeJs because `RunnableConfig.metadata` propagation to the JS distro tracer isn't wired yet.
 - **`gen_ai.agent.version`** and **`gen_ai.conversation.id`** are missing on every single invoke_agent span (43/43) across all 4 distros.
 - **Provider-name capitalization**: MAF Python invoke_agent spans emit lowercase `"microsoft.agent_framework"` (not `"Microsoft.agent_framework"`).
 
@@ -110,14 +109,15 @@ Note: Conditional attrs `server.port` and `gen_ai.output.type` are correctly omi
 
 | Pattern | Affected rows |
 |---|---|
-| `gen_ai.provider.name` Required-but-wrong-value | 1 (`"azure"`), 4 (split), 7 (`"azure.ai.foundry"`) |
-| Required span entirely absent | 4–6 (invoke_agent) |
-| `gen_ai.response.{id,model,finish_reasons}` missing on chat | 4, 5, 6 |
+| `gen_ai.provider.name` Required-but-wrong-value | 1 (`"azure"`), 4 (`"azure"`), 7 (`"azure.ai.foundry"`) |
+| Required span entirely absent | _(none)_ |
+| `gen_ai.response.finish_reasons` missing on chat | 4, 5, 6 |
 | `gen_ai.response.model` missing on streaming chat only | 10 |
 | `gen_ai.response.finish_reasons` missing on streaming chat only | 11 |
+| `gen_ai.response.model` reports deployment alias on Foundry RAPI | 3, 6 |
 | `gen_ai.request.choice.count` missing on chat | 4, 5, 6, 10, 11 |
 | `gen_ai.conversation.id` missing on invoke_agent | all (1–11) |
-| `gen_ai.agent.{name,id,description}` missing on invoke_agent | 4, 5 (6 emits no invoke_agent at all) |
+| `gen_ai.agent.{id,description}` missing on invoke_agent | 4, 5, 6 |
 | HTTP client spans missing | 4–6 |
 
 ## Test methodology
@@ -130,7 +130,7 @@ Each agent runs against the same Azure Foundry / Azure OpenAI deployments and em
 |---|---|---|
 | LangChain Python | `microsoft-opentelemetry` | `1.3.0` |
 | LangChain Python | `langchain`, `langchain-core`, `langchain-openai` | `1.3.2`, `1.4.0`, `1.2.2` |
-| LangChain NodeJs | `@microsoft/opentelemetry` | `1.0.2` |
+| LangChain NodeJs | `@microsoft/opentelemetry` | `1.1.0` |
 | MAF Python | `microsoft-opentelemetry` | `1.3.0` |
 | MAF Python | `agent-framework`, `agent-framework-core`, `agent-framework-foundry`, `agent-framework-openai` | `1.6.0` |
 | MAF .NET | `Microsoft.Agents.AI`, `Microsoft.Agents.AI.OpenAI`, `Microsoft.Agents.AI.Workflows` | `1.7.0` |
@@ -219,7 +219,7 @@ workflow root
 | MAF Python | ✓ `executor.process` under `workflow.run` (workflow root) | ✓ `execute_tool weather_data_agent` (under Main) | **No** — siblings correctly attributed to the workflow root via `executor.process` parents. |
 | MAF .NET | ❌ **No parent — siblings are root spans**, but ✅ now bridged via `microsoft.gen_ai.main_agent.name` attribute (see Main Agent attribution section below) | ✓ `execute_tool weather_data_agent` (under Main) | **Closed in `Microsoft.OpenTelemetry 1.0.3`** — root sibling `invoke_agent` spans still have no shared parent, but the spec's `microsoft.gen_ai.main_agent.*` SpanProcessor now propagates the main-agent identity correctly, so customers *can* group sibling roots and all descendant spans by main agent. |
 | LangChain Python | ⚠ Parents are LangGraph node spans (`main`, `verify`) which descend from a common `invoke_agent LangGraph` root | ✓ Inner `invoke_agent LangGraph` nested under `tools` span (which is under the data agent's own `invoke_agent LangGraph`) | **Partial** — there *is* a common root, but all 6 `invoke_agent` spans share the generic name `"LangGraph"` (`gen_ai.agent.name` not differentiated per agent), so it is impossible to tell from the span which logical agent (Main / WeatherData / Verifier) it represents. |
-| LangChain NodeJs | n/a (no `invoke_agent` spans emitted — see rows 4–6) | n/a (no `invoke_agent` spans emitted) | **Worse** — no `invoke_agent` spans at all; the verifier and main agent are visually indistinguishable in the trace. |
+| LangChain NodeJs | n/a (Verifier is a direct `chat.invoke` — no `invoke_agent` span) | ✓ Inner `invoke_agent <WeatherDataAgent-...>` nested under `execute_tool weather_data_agent` (which is under the named Main `invoke_agent`) | **Partial** — multi-agent nesting works, but the outer `StateGraph` compiled wrapper still emits a generic `invoke_agent LangGraph` parent above the named Main/Data inner agents (no way to differentiate the workflow root from a logical agent via `gen_ai.agent.name` alone). |
 
 ### Multi-agent reference run IDs
 
@@ -235,7 +235,7 @@ workflow root
 - **MAF Python is the gold standard for multi-agent attribution.** The `agent-framework` workflow runtime emits an outer `workflow.run` span, plus `executor.process <name>` spans per agent step, plus `invoke_agent <AgentName>` under each executor. Sibling agents are unambiguously joined to the workflow.
 - **MAF .NET reproduces (and then closes) the spec's attribution gap.** `AgentWorkflowBuilder.BuildSequential` + `InProcessExecution.RunStreamingAsync` invoke each agent but emit **no workflow / executor parent span**. Each agent's `invoke_agent` span is parentless. The trace topology alone cannot tell you that `MainWeatherAgent` and `VerifierAgent` belong to the same workflow run — but `Microsoft.OpenTelemetry 1.0.3` now implements the [Main Agent attribution spec](#main-agent-attribution-spec-compliance) (both OnStart inheritance and OnEnd self-promotion), so every span carries `microsoft.gen_ai.main_agent.{name,id}` identifying the outermost agent of its branch. Customers can now group by main agent without traversing the parent chain.
 - **LangChain Python's instrumentation under-names agents.** Every `invoke_agent` span emits `gen_ai.agent.name = "LangGraph"` regardless of which logical agent ran. The trace hierarchy is intact (so sibling attribution works), but the spans are not human-readable without inspecting tool calls in the surrounding spans.
-- **LangChain NodeJs (Microsoft distro)** *does* emit `invoke_agent LangGraph` spans (via the LangChain instrumentor included with `@microsoft/opentelemetry 1.0.2`), but suffers from the same under-naming as LC Python (`gen_ai.agent.name = "LangGraph"` for all of Main / Data / Verifier). The Microsoft Node distro does **not** yet implement the Main Agent attribution SpanProcessor at all, so even the "LangGraph" value is not promoted to `microsoft.gen_ai.main_agent.name`.
+- **LangChain NodeJs (Microsoft distro)** emits `invoke_agent` spans via the LangChain instrumentor included with `@microsoft/opentelemetry 1.1.0`. With `createReactAgent({ name })` set per role, the Main and Data inner agents are properly named (e.g. `invoke_agent MainWeatherAgent-completions`), but the outer compiled `StateGraph` still emits a generic `invoke_agent LangGraph` wrapper above them. `microsoft.gen_ai.main_agent.*` propagation **is now implemented** in `1.1.0` (was not in `1.0.2`) and tags 28/29 spans across a 3-protocol run with the outermost agent's identity.
 
 ## Main Agent attribution spec compliance
 
@@ -255,7 +255,7 @@ End-state: every span in a trace is tagged with the **outermost agent** of its b
 | MAF Python | `microsoft-opentelemetry 1.3.0` | ✅ works — `chat` 12/12 (100%) and `execute_tool` 9/9 (100%) inherit `main_agent.{name,id}` from parent's `gen_ai.agent.*` (up from 82% / 67% on `1.2.0`) | ❌ root Main + Verifier `invoke_agent` spans still never get `main_agent.*` (only 3/8 invoke_agent spans attributed — the nested `WeatherDataAgent` siblings, via OnStart from a chat/tool parent) | ⚠ partial — `name` + `id` present on all child spans, `version` 0/all, `conversation_id` partial | **Partial — improved** — `1.3.0` closed the child-inheritance gap (chat / execute_tool now 100%); the root `invoke_agent` OnEnd self-promotion is still not implemented. |
 | MAF .NET | `Microsoft.OpenTelemetry 1.0.3` + `Microsoft.Agents.AI 1.7.0` | ✅ works — all chat / execute_tool / HTTP / nested `invoke_agent` spans inherit | ✅ works — root `MainWeatherAgent` and `VerifierAgent` `invoke_agent` spans self-promote `gen_ai.agent.name → microsoft.gen_ai.main_agent.name` | ⚠ partial — `name` + `id` present on **100%** of spans (16/16 chat-completions run, 23/23 responses run); `version` 0/all (no `gen_ai.agent.version` to fall back from); `conversation_id` partial | ✅ **Fully compliant for `name` + `id`** — newly implemented in `1.0.3`. Was "Not implemented" in `1.0.2`. |
 | LangChain Python | `microsoft-opentelemetry 1.3.0` | ❌ no children attributed | ❌ no roots attributed | ❌ none | **Broken upstream — unchanged on `1.3.0`** — the distro's SpanProcessor *is* registered (same package as MAF Py) but the LangChain `invoke_agent LangGraph` spans have **no** `gen_ai.agent.name` attribute at all in customDimensions, so OnStart has nothing to copy and OnEnd has nothing to promote. The fix has to land in the LangChain instrumentor, not in `microsoft-opentelemetry`. |
-| LangChain NodeJs | `@microsoft/opentelemetry 1.0.2` | ❌ no children attributed | ❌ no roots attributed (even though `gen_ai.agent.name = "LangGraph"` is present on root `invoke_agent` spans, OnEnd does **not** copy it) | ❌ none | **Not implemented** — the SpanProcessor described in the spec is not registered/effective in the Node distro `1.0.2`. No newer version of `@microsoft/opentelemetry` has shipped on npm yet (`1.0.2` is the `dist-tags.latest` as of 2026-05-27), so we couldn't validate a fix. Same situation MAF .NET was in at `1.0.2`. |
+| LangChain NodeJs | `@microsoft/opentelemetry 1.1.0` | ✅ works — chat / execute_tool / nested `invoke_agent` all inherit `main_agent.name` from the parent invoke_agent's `gen_ai.agent.name` (28/29 spans across the 3-protocol `distro11c-lcnode-152908` run; the single miss is a Verifier chat whose parent `invoke_agent LangGraph` wasn't emitted under one protocol) | ✅ works — root `invoke_agent` spans self-promote `gen_ai.agent.name → microsoft.gen_ai.main_agent.name` | ⚠ partial — `name` present on ~96%, `id`/`description` not set (no source attribute to promote); `conversation_id` not set | ✅ **Newly implemented in `1.1.0`** — was "Not implemented" in `1.0.2`. |
 
 ### Evidence (sample span breakdown — MAF .NET, `responses` protocol, `v2-mafnet-112454`)
 
@@ -302,7 +302,7 @@ MAF Python's per-span behavior on `1.3.0` is the same shape as before (children 
 - ✅ With **MAF Python (`microsoft-opentelemetry 1.3.0`)**, customers can now filter or aggregate **100% of `chat` / `execute_tool` / HTTP / nested `invoke_agent`** spans by `microsoft.gen_ai.main_agent.name` (up from ~70-80% on `1.2.0`). `1.3.0` closed the OnStart inheritance gap for children.
 - ❌ With **MAF Python**, the two **root `invoke_agent`** spans per workflow run (Main + Verifier) are still NOT included in such a filter — the OnEnd self-promotion gap is still present in `microsoft-opentelemetry 1.3.0`. Workarounds: filter on `gen_ai.agent.name` for those rows, or wait for an OnEnd fix in the Python distro.
 - ❌ With **LangChain Python**, the spec is registered but not effective — no spans get `microsoft.gen_ai.main_agent.*` because the upstream LangChain instrumentor emits no `gen_ai.agent.name` at all. Upgrading the distro from `1.2.0` to `1.3.0` did **not** change this (verified via runs `v2-lcpy-112454` and `v5-lcpy-150231`). Customers must rely on parent-span traversal in KQL to scope a query.
-- ❌ With **LangChain NodeJs** (`@microsoft/opentelemetry 1.0.2`), the SpanProcessor is not yet implemented in the Node distro, so the spec is not effective. `invoke_agent LangGraph` spans are emitted with non-empty `gen_ai.agent.name` (which a working OnEnd would self-promote), but no `microsoft.gen_ai.main_agent.*` appears on any span. The fix that landed in `Microsoft.OpenTelemetry 1.0.3` for .NET has no Node counterpart yet (npm `dist-tags.latest` is still `1.0.2` as of 2026-05-27).
+- ✅ With **LangChain NodeJs** (`@microsoft/opentelemetry 1.1.0`), customers can now filter or aggregate ~96% of spans in a multi-agent trace by `microsoft.gen_ai.main_agent.name`. The OnStart / OnEnd SpanProcessor is newly implemented in `1.1.0` (was "Not implemented" in `1.0.2`). `id`, `version`, and `conversation_id` remain unattributed because the upstream `gen_ai.agent.*` source attributes are not emitted by the LangChain JS instrumentor for these fields.
 
 ### Reference runs (latest, after Python distro upgrade to `1.3.0`)
 
@@ -311,7 +311,7 @@ MAF Python's per-span behavior on `1.3.0` is the same shape as before (children 
 | MAF Python | `v3-mafpy-150803` | `microsoft-opentelemetry 1.3.0`, `agent-framework 1.6.0` |
 | MAF .NET | `v4-mafnet-130929` | `Microsoft.OpenTelemetry 1.0.3`, `Microsoft.Agents.AI 1.7.0`, `Microsoft.Agents.AI.Workflows 1.7.0` |
 | LangChain Python | `v5-lcpy-150231` | `microsoft-opentelemetry 1.3.0`, `langchain 1.2.16`, `langgraph 1.1.10` |
-| LangChain NodeJs | `v3-lcnode-122530` | `@microsoft/opentelemetry 1.0.2`, `@langchain/langgraph 0.4.0` |
+| LangChain NodeJs | `distro11c-lcnode-152908` | `@microsoft/opentelemetry 1.1.0`, `@langchain/langgraph 0.4.0` |
 
 Earlier baselines for comparison: `v2-mafpy-112454` (MAF Py on `1.2.0`), `v2-lcpy-112454` (LC Py on `1.2.0`).
 
