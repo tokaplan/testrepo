@@ -120,6 +120,15 @@ DEFAULT_APP_INSIGHTS_CONNECTION_STRING = (
 )
 
 
+# Human-readable descriptions for each agent role. These get attached as
+# `gen_ai.agent.description` via the standard LangChain `Runnable.with_config`
+# metadata mechanism (see build_workflow below). Mirrors the MAF agents'
+# Agent(description=...) constructor kwarg.
+DATA_AGENT_DESCRIPTION = "Looks up weather for one or more cities via get_current_weather."
+MAIN_AGENT_DESCRIPTION = "Friendly weather assistant that delegates lookups to a data agent."
+VERIFIER_AGENT_DESCRIPTION = "Sanity-checks the main agent's weather report."
+
+
 # ---------------------------------------------------------------------------
 # Inner weather tool (raw function)
 # ---------------------------------------------------------------------------
@@ -214,11 +223,38 @@ def _extract_text(message) -> str:
 # Build the multi-agent workflow for a given chat model
 # ---------------------------------------------------------------------------
 def build_workflow(data_model, main_model, verifier_model, protocol_tag: str):
-    # Inner data agent: has the raw weather tool
+    # Per-role agent identities. Generated once at workflow construction so
+    # each agent has a stable `gen_ai.agent.id` for the lifetime of this run
+    # (same pattern as MAF's Agent(), which auto-assigns a UUID per instance).
+    data_agent_id = str(uuid.uuid4())
+    main_agent_id = str(uuid.uuid4())
+    verifier_agent_id = str(uuid.uuid4())
+
+    data_agent_name = f"WeatherDataAgent-{protocol_tag}"
+    main_agent_name = f"MainWeatherAgent-{protocol_tag}"
+    verifier_agent_name = f"VerifierAgent-{protocol_tag}"
+
+    # Per-agent metadata that the Microsoft OpenTelemetry distro lifts onto
+    # `invoke_agent` spans as `gen_ai.agent.id` / `gen_ai.agent.description`.
+    # NOTE: We pass this on every .ainvoke() call (per-call RunnableConfig)
+    # rather than via `.with_config(metadata=...)` because LangGraph rebuilds
+    # the RunnableConfig when dispatching to each subgraph node, which drops
+    # any metadata previously bound via with_config. Per-call config metadata
+    # survives that round-trip and is the documented LC mechanism for
+    # attaching run-level metadata.
+    data_meta = {"agent_id": data_agent_id, "agent_description": DATA_AGENT_DESCRIPTION}
+    main_meta = {"agent_id": main_agent_id, "agent_description": MAIN_AGENT_DESCRIPTION}
+    verifier_meta = {"agent_id": verifier_agent_id, "agent_description": VERIFIER_AGENT_DESCRIPTION}
+
+    # Inner data agent: has the raw weather tool.
+    # `name=` is the public create_agent kwarg; the Microsoft distro's
+    # LangChain instrumentor lifts it into the `invoke_agent <name>` span
+    # name and the `gen_ai.agent.name` attribute.
     data_agent = create_agent(
         data_model,
         tools=[get_current_weather],
         system_prompt=DATA_INSTRUCTIONS,
+        name=data_agent_name,
     )
 
     @tool
@@ -227,9 +263,18 @@ def build_workflow(data_model, main_model, verifier_model, protocol_tag: str):
         config: RunnableConfig = None,
     ) -> str:
         """Delegate weather lookups to the weather data agent."""
+        # The tool body runs inside main agent's context, so the incoming
+        # `config.metadata` already carries main_meta. Override it with
+        # data_meta for the nested data agent's run so its invoke_agent span
+        # carries the data role's id/description, not main's.
+        parent_meta = (config or {}).get("metadata", {}) if config else {}
+        nested_config = {
+            **(config or {}),
+            "metadata": {**parent_meta, **data_meta},
+        }
         result = await data_agent.ainvoke(
             {"messages": [HumanMessage(content=f"Look up weather for: {cities}")]},
-            config=config,
+            config=nested_config,
         )
         msgs = result.get("messages", [])
         for msg in reversed(msgs):
@@ -239,30 +284,39 @@ def build_workflow(data_model, main_model, verifier_model, protocol_tag: str):
                     return text
         return ""
 
-    # Main agent: has the data-agent-as-tool
+    # Main agent: has the data-agent-as-tool.
     main_agent = create_agent(
         main_model,
         tools=[weather_data_agent],
         system_prompt=MAIN_INSTRUCTIONS,
+        name=main_agent_name,
     )
 
-    # Verifier agent: no tools
+    # Verifier agent: no tools.
     verifier_agent = create_agent(
         verifier_model,
         tools=[],
         system_prompt=VERIFIER_INSTRUCTIONS,
+        name=verifier_agent_name,
     )
 
-    # Sequential workflow: main -> verifier
+    # Sequential workflow: main -> verifier.
+    # Each node merges per-agent metadata into the per-call RunnableConfig so
+    # the Microsoft distro's LangChain instrumentor can lift agent_id /
+    # agent_description onto the corresponding `invoke_agent` span.
     async def main_node(state: MessagesState, config: RunnableConfig):
+        parent_meta = (config or {}).get("metadata", {}) if config else {}
+        cfg = {**(config or {}), "metadata": {**parent_meta, **main_meta}}
         before = len(state["messages"])
-        result = await main_agent.ainvoke({"messages": state["messages"]}, config=config)
+        result = await main_agent.ainvoke({"messages": state["messages"]}, config=cfg)
         new_msgs = result["messages"][before:]
         return {"messages": new_msgs}
 
     async def verify_node(state: MessagesState, config: RunnableConfig):
+        parent_meta = (config or {}).get("metadata", {}) if config else {}
+        cfg = {**(config or {}), "metadata": {**parent_meta, **verifier_meta}}
         before = len(state["messages"])
-        result = await verifier_agent.ainvoke({"messages": state["messages"]}, config=config)
+        result = await verifier_agent.ainvoke({"messages": state["messages"]}, config=cfg)
         new_msgs = result["messages"][before:]
         return {"messages": new_msgs}
 
