@@ -313,6 +313,36 @@ MAF Python's per-span behavior on `1.3.0` is the same shape as before (children 
 - ⚠ With **LangChain Python**, the nested `WeatherDataAgent-foundry-responses` `invoke_agent` span has a regressed `gen_ai.agent.name` (gets the parent **MainWeatherAgent**'s name even though its `agent.id` and `agent.description` are correctly the data agent's). This is a LangChain/LangGraph instrumentor bug — `create_agent(name=...)` value is not surfacing into the nested invocation when launched from the `@tool` wrapper on the `foundry-responses` protocol path. Other protocols don't even emit a nested Data invoke_agent span (matrix's known per-protocol asymmetry).
 - ✅ With **LangChain NodeJs** (`@microsoft/opentelemetry 1.1.0`), customers can filter or aggregate **100% of spans** in a multi-agent trace by `microsoft.gen_ai.main_agent.name` on `wk2s-lcnode-130123` (35/35 — full coverage across `chat` 15/15, `execute_tool` 9/9, `invoke_agent` 11/11). Improved from the `28/29` (~96%) seen on the prior `distro11c-lcnode-152908` baseline. `id`, `version`, and `conversation_id` remain unattributed because the upstream `gen_ai.agent.*` source attributes are not emitted by the LangChain JS instrumentor for these fields.
 
+### What an average user can do to close the source-attribute gaps
+
+The compliance gaps above split into two kinds: **distro/instrumentor bugs** (no user-side fix possible) and **values the agent code simply never specified** (closable with documented SDK knobs). The table below shows what an average user can close per distro using only officially-supported constructor / invoke / instrumentation arguments — no instrumentor patching, no private APIs.
+
+| Attribute | MAF .NET | MAF Python | LangChain Python | LangChain NodeJs |
+|---|---|---|---|---|
+| `gen_ai.agent.version` | ❌ no SDK knob — `ChatClientAgent` constructor has no `version` arg | ❌ no SDK knob — `ChatAgent` constructor has no `version` arg | ✅ `LangChainInstrumentor().instrument(agent_version=...)` before `use_microsoft_opentelemetry(...)` — **single global value** for the whole process | ❌ JS instrumentor only reads `run.name`; no path from user code to `gen_ai.agent.version` |
+| `gen_ai.conversation.id` | ⚠ per-agent via `ChatClientAgentSession.ConversationId` but the workflow runtime (`AgentWorkflowBuilder.BuildSequential`) doesn't surface a per-run conversation_id arg | ⚠ per-agent via `agent.run(conversation_id=...)` but the workflow runtime (`Workflow.run(message)`) doesn't accept it; using a workflow swallows the knob | ✅ `graph.ainvoke(..., config={"metadata": {"thread_id": "<uuid>"}})` — LangGraph propagates metadata to all child spans | ✅ `graph.invoke(..., {metadata: {conversation_id: "<uuid>"}})` — **must use key `conversation_id`** (not `thread_id`, which maps to a different `microsoft.session_id` attr) |
+| `gen_ai.agent.id` | ✅ already set by SDK | ✅ already set by SDK | ✅ already set per-invoke from `RunnableConfig.metadata.agent_id` | ❌ JS instrumentor only reads `run.name`; never reads `agent_id` from any source |
+
+After applying the closable knobs (LC Py global agent_version + per-invoke thread_id; LC Node per-invoke conversation_id), coverage measured on `v3cv-lcpy-135936` and `v2cv-lcnode-135224`:
+
+| Distro | `gen_ai.agent.version` | `microsoft.gen_ai.main_agent.version` | `gen_ai.conversation.id` | `microsoft.gen_ai.main_agent.conversation_id` |
+|---|---:|---:|---:|---:|
+| LangChain Python | 9 / 74 source spans (12%) | **59 / 74 (80%)** — every span that inherits `main_agent.name` also inherits the version | 67 / 74 (91%) | 69 / 74 (93%) |
+| LangChain NodeJs | 0 / 24 (instrumentor blocker) | 0 / 24 | **24 / 24 (100%)** | **24 / 24 (100%)** |
+
+Structural blockers (no average-user workaround):
+- **MAF .NET / MAF Python workflow runtimes** swallow the per-agent `conversation_id` knob. The workflow builder's `Run/RunStreaming(message)` overloads don't accept a per-run conversation_id, and there's no public way to inject one into the underlying `AgentThread` / `AgentExecutor` from the workflow caller.
+- **Both MAF SDKs** have no agent-version knob at all (`ChatClientAgent` in .NET / `ChatAgent` in Python expose `name`, `description`, `instructions`, `tools`, `chatOptions` — nothing version-shaped).
+- **LangChain JS instrumentor** reads only `run.name` for `gen_ai.agent.*`. There's no metadata path from user code to `gen_ai.agent.id` or `gen_ai.agent.version` regardless of what the user passes.
+- **LangChain Python distro** reads `agent_version` from the instrumentor's `_agent_config` at instrumentation time (not from per-invoke metadata). An average user can set ONE global version for the whole process; per-agent versions in a multi-agent app are not supported.
+
+### Reference runs (latest — source-attribute gap closure with average-user knobs)
+
+| Distro | runId | What changed in main.py | What closed |
+|---|---|---|---|
+| LangChain Python | `v3cv-lcpy-135936` | added `LangChainInstrumentor().instrument(agent_version="1.0.0")` before `use_microsoft_opentelemetry(...)`; pass per-protocol `thread_id` via `RunnableConfig.metadata` on top-level `graph.ainvoke` | `gen_ai.agent.version` (global), `gen_ai.conversation.id` 91%, `microsoft.gen_ai.main_agent.{version,conversation_id}` 80% / 93% |
+| LangChain NodeJs | `v2cv-lcnode-135224` | pass per-protocol `conversation_id` via metadata on top-level `graph.invoke` | `gen_ai.conversation.id` 100%, `microsoft.gen_ai.main_agent.conversation_id` 100% |
+
 ### Reference runs (latest — week-2 re-validation, post `agent-framework 1.7.0` and `langchain 1.3.4` upgrades)
 
 | Distro | runId | Distro package(s) |

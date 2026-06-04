@@ -22,6 +22,9 @@ import uuid
 from typing import Annotated
 
 from microsoft.opentelemetry import use_microsoft_opentelemetry
+from microsoft.opentelemetry._genai._langchain._tracer_instrumentor import (
+    LangChainInstrumentor,
+)
 from opentelemetry import trace
 from opentelemetry.sdk.trace import SpanProcessor as BaseSpanProcessor
 
@@ -242,9 +245,18 @@ def build_workflow(data_model, main_model, verifier_model, protocol_tag: str):
     # any metadata previously bound via with_config. Per-call config metadata
     # survives that round-trip and is the documented LC mechanism for
     # attaching run-level metadata.
-    data_meta = {"agent_id": data_agent_id, "agent_description": DATA_AGENT_DESCRIPTION}
-    main_meta = {"agent_id": main_agent_id, "agent_description": MAIN_AGENT_DESCRIPTION}
-    verifier_meta = {"agent_id": verifier_agent_id, "agent_description": VERIFIER_AGENT_DESCRIPTION}
+    data_meta = {
+        "agent_id": data_agent_id,
+        "agent_description": DATA_AGENT_DESCRIPTION,
+    }
+    main_meta = {
+        "agent_id": main_agent_id,
+        "agent_description": MAIN_AGENT_DESCRIPTION,
+    }
+    verifier_meta = {
+        "agent_id": verifier_agent_id,
+        "agent_description": VERIFIER_AGENT_DESCRIPTION,
+    }
 
     # Inner data agent: has the raw weather tool.
     # `name=` is the public create_agent kwarg; the Microsoft distro's
@@ -373,7 +385,17 @@ async def run_once(workflows, run_label: str) -> int:
     async def _run(protocol, graph):
         TestAgentSpanProcessor.set_protocol(protocol)
         try:
-            result = await graph.ainvoke({"messages": [HumanMessage(content=USER_PROMPT)]})
+            # One conversation per workflow run. The Microsoft OTEL distro's
+            # LangChain instrumentor reads `thread_id` / `conversation_id` /
+            # `session_id` from RunnableConfig.metadata and emits it as
+            # `gen_ai.conversation.id` on every span. LangGraph propagates
+            # metadata down the run tree, so setting it once at the top
+            # invocation covers all child runs.
+            conversation_id = str(uuid.uuid4())
+            result = await graph.ainvoke(
+                {"messages": [HumanMessage(content=USER_PROMPT)]},
+                config={"metadata": {"thread_id": conversation_id}},
+            )
             return (protocol, result, None)
         except Exception as ex:
             return (protocol, None, ex)
@@ -421,6 +443,17 @@ async def main() -> int:
     print(f"AppInsights: {connection_string[:60]}...")
 
     os.environ.setdefault("OTEL_SERVICE_NAME", SERVICE_NAME)
+
+    # Pre-install the LangChain instrumentor with our app version so the
+    # Microsoft OpenTelemetry distro's auto-install (which runs inside
+    # use_microsoft_opentelemetry below) is a no-op for LangChain and
+    # our agent_version is preserved.  The distro reads `agent_version`
+    # from the instrumentor's _agent_config (init-time, not per-invoke),
+    # so this is the documented seam for setting it.  All invoke_agent
+    # spans in the process share this single value -- the SDK does not
+    # support per-agent versions today.
+    LangChainInstrumentor().instrument(agent_version="1.0.0")
+
     use_microsoft_opentelemetry(
         enable_azure_monitor=True,
         azure_monitor_connection_string=connection_string,

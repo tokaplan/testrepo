@@ -384,9 +384,19 @@ async function runOnce(workflows, runLabel) {
   async function runOne({ protocol, graph }) {
     return setProto(protocol, async () => {
       try {
-        const result = await graph.invoke({
-          messages: [new HumanMessage(USER_PROMPT)],
-        });
+        // One conversation per workflow run. The Microsoft OTEL distro's
+        // LangChain instrumentor reads `metadata.conversation_id` and emits
+        // it as `gen_ai.conversation.id` on every span (note: it reads
+        // session_id/thread_id only for the separate microsoft.session_id
+        // attribute). LangGraph propagates metadata down the run tree, so
+        // setting it once at the top invocation covers all child runs.
+        const conversationId = randomUUID();
+        const result = await graph.invoke(
+          {
+            messages: [new HumanMessage(USER_PROMPT)],
+          },
+          { metadata: { conversation_id: conversationId } }
+        );
         return { protocol, result };
       } catch (error) {
         return { protocol, error };
