@@ -256,14 +256,178 @@ In short, the distro MUST register a SpanProcessor whose:
 
 End-state: every span in a trace is tagged with the **outermost agent** of its branch so customers can group telemetry by main agent.
 
+### Propagation failures vs source-absent gaps (evidence-based, latest runs)
+
+"Missing `microsoft.gen_ai.main_agent.X`" falls into two categories that have very different remediation owners:
+
+- **Propagation failure (P)** — the source attribute (either the span's own `gen_ai.agent.X` for OnEnd, or a parent's `gen_ai.agent.X` / `main_agent.X` for OnStart) IS present in the trace, but the distro's SpanProcessor failed to copy it. **Distro/instrumentor owns the fix.**
+- **Source-absent (S)** — the source attribute was never emitted upstream, so nothing exists to propagate. **Customer code or upstream SDK owns the fix.**
+
+The evidence below is from per-bucket, per-trace KQL correlation on the four latest reference runs.
+
+#### Per-bucket counts (children of `invoke_agent`): "did the source ancestor have `gen_ai.agent.name`?"
+
+| Distro / runId | bucket | total | inherited `main_agent.name` | in-agent-trace, **missed** inheritance (P) | in non-agent-trace (S) |
+|---|---|---:|---:|---:|---:|
+| MAF .NET / `v104-mafnet-132735` | chat | 11 | 11 | **0** | 0 |
+| | execute_tool | 8 | 8 | **0** | 0 |
+| | http | 13 | 13 | **0** | 0 |
+| | other | 6 | 6 | **0** | 0 |
+| MAF Python / `wk2s-mafpy-130123` | chat | 13 | 12 | **1** | 0 |
+| | execute_tool | 9 | 8 | **1** | 0 |
+| | http | 13 | 11 | **2** | 0 |
+| | other (workflow infra) | 23 | 0 | 0 | 17 in-agent-trace but no agent ancestor parent + 6 in non-agent-trace — all S |
+| LC Python / `v3cv-lcpy-135936` | chat | 10 | 10 | **0** | 0 |
+| | execute_tool | 8 | 8 | **0** | 0 |
+| | http | 7 | 7 | **0** | 0 |
+| | other (LangGraph wrappers) | 40 | 31 | 0 | 9 — wrapper spans are PARENTS of invoke_agent (no agent ancestor above) |
+| LC NodeJs / `v2cv-lcnode-135224` | chat | 15 | 15 | **0** | 0 |
+| | execute_tool | 9 | 9 | **0** | 0 |
+
+#### Root `invoke_agent` OnEnd self-promotion: "did the span have its own `gen_ai.agent.name` for the processor to self-promote?"
+
+| Distro | invoke_agent count | source `gen_ai.agent.name` present | `microsoft.gen_ai.main_agent.name` populated | **OnEnd propagation failures (P)** |
+|---|---:|---:|---:|---:|
+| MAF .NET | 6 | 6 | 6 | **0** |
+| MAF Python | 8 | 8 | 2 | **6** (root Main + Verifier across 3 protocols never self-promote) |
+| LC Python | 9 | 9 | 3 | **6** (named root invoke_agents inconsistently self-promote) |
+| LC NodeJs | 11 (prior `wk2s-lcnode-130123` baseline) | 11 | 11 | **0** |
+
+#### Net distro/instrumentor bug counts (P-class — what actually needs an SDK fix)
+
+| Distro | OnEnd self-promotion failures | OnStart inheritance failures | Source-attribute bugs (not propagation) | Net P-class bugs |
+|---|---:|---:|---|---:|
+| MAF .NET | 0 | 0 | none | **0** |
+| MAF Python | 6 | 4 | none | **10** |
+| LC Python | 6 | 0 | 3 nested `WeatherDataAgent` invoke_agent spans (one per protocol) have `gen_ai.agent.name` leaked from parent Main agent's name | **6 propagation + 3 source-side** |
+| LC NodeJs | 0 | 0 | foundry/responses-protocol invoke_agent spans get `gen_ai.agent.name="LangGraph"` (outer-node leak); `agent.id`/`agent.version` never read from any source | **0 propagation + ≥2 source-side** |
+
+So when we strip away "you can't propagate what was never set," **only MAF Python and LC Python have actual distro propagation bugs** — both centered on the root-invoke_agent OnEnd self-promotion (MAF Py also has 4 small OnStart leaks). MAF .NET's and LC NodeJs's distros are doing exactly what the spec asks; their remaining gaps are upstream SDK / instrumentor source-emission issues.
+
+#### Run → source-code commit mapping (for reproducibility)
+
+| Run | Code commit | Notes |
+|---|---|---|
+| `v104-mafnet-132735` (MAF .NET) | [`f5e887c`](../../../commit/f5e887c) | csproj at `Microsoft.OpenTelemetry 1.0.4` |
+| `wk2s-mafpy-130123` (MAF Python) | [`a25aa52`](../../../commit/a25aa52) (or its predecessor `a316a1b` — main.py unchanged between them) | distro `microsoft-opentelemetry 1.3.2`, framework `1.7.0` |
+| `v3cv-lcpy-135936` (LC Python) | [`a26b8bc`](../../../commit/a26b8bc) | adds `LangChainInstrumentor().instrument(agent_version="1.0.0")` pre-install + per-invoke `thread_id` metadata |
+| `v2cv-lcnode-135224` (LC NodeJs) | [`a26b8bc`](../../../commit/a26b8bc) | adds per-invoke `conversation_id` metadata |
+
+#### KQL — Bug 1: MAF Python root `invoke_agent` OnEnd self-promotion fails (6 spans)
+
+Expected: every span with `gen_ai.operation.name == "invoke_agent"` self-promotes `gen_ai.agent.{name,id,version}` → `microsoft.gen_ai.main_agent.{name,id,version}` on OnEnd. Bug: 6 of 8 invoke_agent spans have `gen_ai.agent.name` populated but `microsoft.gen_ai.main_agent.name` empty.
+
+```kusto
+let svc = 'WeatherChatMAFPython-MS-Distro';
+let rid = 'wk2s-mafpy-130123';
+dependencies
+| where timestamp > ago(2d) and cloud_RoleName == svc
+| extend cd = parse_json(tostring(customDimensions))
+| where tostring(cd['test.runId']) == rid
+| where tostring(cd['gen_ai.operation.name']) == 'invoke_agent'
+| extend agent_name      = tostring(cd['gen_ai.agent.name'])
+| extend agent_id        = tostring(cd['gen_ai.agent.id'])
+| extend main_agent_name = tostring(cd['microsoft.gen_ai.main_agent.name'])
+| extend main_agent_id   = tostring(cd['microsoft.gen_ai.main_agent.id'])
+| where isnotempty(agent_name) and isempty(main_agent_name)
+| project timestamp, name, operation_Id, id, agent_name, agent_id, main_agent_name, main_agent_id
+| order by timestamp asc
+```
+
+#### KQL — Bug 2: MAF Python OnStart inheritance leaks (4 spans)
+
+Expected: every child span copies `microsoft.gen_ai.main_agent.*` from its parent (or falls back to the parent's `gen_ai.agent.*` if `main_agent.*` is missing). Bug: 1 `chat` + 1 `execute_tool` + 2 `http` spans sit inside a trace whose `invoke_agent` ancestor carries `gen_ai.agent.name`, but the child span ended up without `microsoft.gen_ai.main_agent.name`.
+
+```kusto
+let svc = 'WeatherChatMAFPython-MS-Distro';
+let rid = 'wk2s-mafpy-130123';
+let scope = dependencies
+  | where timestamp > ago(2d) and cloud_RoleName == svc
+  | extend cd = parse_json(tostring(customDimensions))
+  | where tostring(cd['test.runId']) == rid;
+let tracesWithAgentSource = scope
+  | where tostring(cd['gen_ai.operation.name']) == 'invoke_agent'
+        and isnotempty(tostring(cd['gen_ai.agent.name']))
+  | distinct operation_Id;
+scope
+| extend op = tostring(cd['gen_ai.operation.name'])
+| extend bucket = case(
+    op == 'chat',         'chat',
+    op == 'execute_tool', 'execute_tool',
+    type contains 'Http' or name startswith 'POST ' or name startswith 'GET ', 'http',
+    'other')
+| where bucket in ('chat','execute_tool','http')
+| extend main_agent_name = tostring(cd['microsoft.gen_ai.main_agent.name'])
+| where isempty(main_agent_name)
+| join kind=inner (tracesWithAgentSource) on operation_Id
+| project timestamp, bucket, name, operation_Id, id, target, main_agent_name
+| order by timestamp asc
+```
+
+#### KQL — Bug 3: LC Python root `invoke_agent` OnEnd self-promotion fails (6 of 9 spans)
+
+Expected: same as Bug 1 — every `invoke_agent` span self-promotes `gen_ai.agent.{name,id,version,conversation_id}` → `main_agent.{name,id,version,conversation_id}` on OnEnd. LC Py has the strongest source coverage of any distro (all 9 invoke_agent spans have all 4 source attrs). Bug: only 3 of 9 named root invoke_agent spans self-promote.
+
+```kusto
+let svc = 'LangChainPython-MS-Distro';
+let rid = 'v3cv-lcpy-135936';
+dependencies
+| where timestamp > ago(2d) and cloud_RoleName == svc
+| extend cd = parse_json(tostring(customDimensions))
+| where tostring(cd['test.runId']) == rid
+| where tostring(cd['gen_ai.operation.name']) == 'invoke_agent'
+| extend agent_name      = tostring(cd['gen_ai.agent.name'])
+| extend agent_id        = tostring(cd['gen_ai.agent.id'])
+| extend agent_version   = tostring(cd['gen_ai.agent.version'])
+| extend conversation_id = tostring(cd['gen_ai.conversation.id'])
+| extend main_name       = tostring(cd['microsoft.gen_ai.main_agent.name'])
+| extend main_id         = tostring(cd['microsoft.gen_ai.main_agent.id'])
+| extend main_version    = tostring(cd['microsoft.gen_ai.main_agent.version'])
+| extend main_conv       = tostring(cd['microsoft.gen_ai.main_agent.conversation_id'])
+| extend selfPromoted    = iif(isnotempty(main_name), 'YES', 'NO')
+| project timestamp, name, operation_Id, id,
+          agent_name, agent_id, agent_version, conversation_id,
+          main_name, main_id, main_version, main_conv, selfPromoted
+| order by timestamp asc
+```
+
+#### KQL — Bug 4: LC Python nested `WeatherDataAgent` name leak (3 spans, all 3 protocols)
+
+Expected: the nested `invoke_agent` for the Data agent should carry its own identity. `create_agent(name="WeatherDataAgent-…", agent_id=<data-uuid>, description="Looks up weather…")` was called with all three fields, so all three should appear on the nested span. Bug: `gen_ai.agent.name` on those nested spans shows the **parent Main agent's name**; `gen_ai.agent.id` (different UUID) and `gen_ai.agent.description` ("Looks up weather…") are still correct, proving `RunnableConfig.metadata` was read properly — only the `name` field leaks from the parent context. Detector: within a trace, find invoke_agent spans that share `agent_name` but have different `agent_id` values.
+
+```kusto
+let svc = 'LangChainPython-MS-Distro';
+let rid = 'v3cv-lcpy-135936';
+let invokes = dependencies
+  | where timestamp > ago(2d) and cloud_RoleName == svc
+  | extend cd = parse_json(tostring(customDimensions))
+  | where tostring(cd['test.runId']) == rid
+  | where tostring(cd['gen_ai.operation.name']) == 'invoke_agent'
+  | project timestamp, name, operation_Id, id,
+            agent_name = tostring(cd['gen_ai.agent.name']),
+            agent_id   = tostring(cd['gen_ai.agent.id']),
+            agent_desc = tostring(cd['gen_ai.agent.description']);
+let leakedNames = invokes
+  | summarize distinctIds = dcount(agent_id) by operation_Id, agent_name
+  | where distinctIds > 1
+  | project operation_Id, agent_name;
+invokes
+| join kind=inner (leakedNames) on operation_Id, agent_name
+| project timestamp, name, operation_Id, agent_name, agent_id,
+          agent_desc = substring(agent_desc, 0, 80)
+| order by operation_Id, timestamp asc
+```
+
+Returns 6 rows in 3 pairs (one pair per protocol — `completions`, `foundry-completions`, `foundry-responses`). Each pair has two rows with the same `agent_name = "MainWeatherAgent-<protocol>"` but different `agent_id` UUIDs and different `agent_desc` values. The row whose `agent_desc` starts with `"Looks up weather…"` is the nested data agent whose `gen_ai.agent.name` got overwritten with the parent's name.
+
 ### Per-distro compliance (multi-agent runs above)
 
 | Distro | Distro package | OnStart inheritance (children) | OnEnd self-promotion (root `invoke_agent`) | All 4 spec attributes emitted? | Verdict |
 |---|---|:-:|:-:|:-:|---|
-| MAF Python | `microsoft-opentelemetry 1.3.2` + `agent-framework 1.7.0` | ✅ works — `chat` 12/13 (92%) and `execute_tool` 8/9 (89%) inherit `main_agent.{name,id}` from parent's `gen_ai.agent.*` (unchanged across the `agent-framework 1.6.0 → 1.7.0` bump; same shape as `1.3.0`) | ❌ root Main + Verifier `invoke_agent` spans still never get `main_agent.*` (only 2/8 invoke_agent spans attributed on `wk2s-mafpy-130123` — the nested `WeatherDataAgent` siblings, via OnStart from a chat/tool parent) | ⚠ partial — `name` + `id` present on most child spans, `version` 0/all, `conversation_id` partial (4/36 "other" spans) | **Partial — unchanged in `1.3.2` / `agent-framework 1.7.0`** — `1.3.0` closed the child-inheritance gap; the root `invoke_agent` OnEnd self-promotion is still not implemented. |
-| MAF .NET | `Microsoft.OpenTelemetry 1.0.4` + `Microsoft.Agents.AI 1.7.0` | ✅ works — all chat / execute_tool / HTTP / nested `invoke_agent` spans inherit | ✅ works — root `MainWeatherAgent` and `VerifierAgent` `invoke_agent` spans self-promote `gen_ai.agent.name → microsoft.gen_ai.main_agent.name` | ⚠ partial — `name` + `id` present on **100%** of spans (44/44 across both protocols on `v104-mafnet-132735` — 11/11 chat, 8/8 execute_tool, 6/6 invoke_agent, 19/19 HTTP/GetToken; identical to `wk2-mafnet-125304` on `1.0.3`); `version` 0/all (no `gen_ai.agent.version` to fall back from); `conversation_id` 6/19 on HTTP-class spans | ✅ **Fully compliant for `name` + `id`** — unchanged from `1.0.3 → 1.0.4` (parity confirmed by side-by-side span-name diff). Was "Not implemented" in `1.0.2`. |
-| LangChain Python | `microsoft-opentelemetry 1.3.2` + `langchain 1.3.4` / `langgraph 1.2.4` | ✅ works — chat / execute_tool / nested `invoke_agent` / wrapper `invoke_agent LangGraph` spans all inherit `main_agent.{name,id}` from the parent's `gen_ai.agent.*` (75/90 spans across the 3-protocol `wk2s-lcpy-130123` run = **83.3%** coverage — unchanged from prior baseline; the 15-span gap is the outer LangGraph workflow infrastructure spans which have no source `gen_ai.agent.*` to inherit from) | ⚠ partial — only 3/9 named root `invoke_agent` spans across the 3 protocols self-promote (33%). One of the three protocols (`foundry-responses`) emits a nested `WeatherDataAgent-foundry-responses` `invoke_agent` whose `gen_ai.agent.name` is incorrectly stamped with the **MainWeatherAgent**'s name (the `agent.id` and `agent.description` are correct, only `name` regresses) — a LangChain/LangGraph instrumentor bug | ⚠ partial — `name` + `id` + `description` present on inner invoke_agent spans and propagated to most descendants; outer `LangGraph` wrappers still emit no `gen_ai.agent.*`; `conversation_id` 0/all | ✅ **Newly working in `1.3.2`** — was "Broken upstream" in `1.3.0` (0% coverage). The fix landed in the bundled `opentelemetry-instrumentation-langchain` that ships with `microsoft-opentelemetry 1.3.2`. |
-| LangChain NodeJs | `@microsoft/opentelemetry 1.1.0` | ✅ works — chat / execute_tool / nested `invoke_agent` all inherit `main_agent.name` from the parent invoke_agent's `gen_ai.agent.name` (**35/35 spans = 100%** across the 3-protocol `wk2s-lcnode-130123` run — improved from `28/29` on the prior `distro11c-lcnode-152908` baseline; the prior single-miss is gone) | ✅ works — root `invoke_agent` spans self-promote `gen_ai.agent.name → microsoft.gen_ai.main_agent.name` (11/11 invoke_agent spans attributed) | ⚠ partial — `name` present on **100%**, `id`/`description` not set (no source attribute to promote — `MAi` 0 / 35); `conversation_id` not set | ✅ **Fully compliant for `name`** in `1.1.0` — was "Not implemented" in `1.0.2`. |
+| MAF Python | `microsoft-opentelemetry 1.3.2` + `agent-framework 1.7.0` | ⚠ mostly works — `chat` 12/13, `execute_tool` 8/9, `http` 11/13 inherit `main_agent.{name,id}` from parent's `gen_ai.agent.*`. The **4 misses across these buckets are trace-correlated propagation failures** (each missing-`main_agent.name` child is in a trace whose `invoke_agent` ancestor DOES carry `gen_ai.agent.name` — see "Propagation failures vs source-absent gaps" below) | ❌ root Main + Verifier `invoke_agent` spans still never self-promote — `gen_ai.agent.name` 8/8 present but `main_agent.name` only 2/8 (6 OnEnd misses, confirmed on `wk2s-mafpy-130123`). The 2 attributed `invoke_agent` rows are nested `WeatherDataAgent` siblings that got their `main_agent.*` via OnStart from a chat/tool parent, not via OnEnd self-promotion | ⚠ partial — `name` + `id` present on most child spans, `version` 0/all (no source — SDK has no version arg), `conversation_id` partial (4/13 chat + 4/13 http) | **Partial — distro has 10 confirmed propagation failures** (6 OnEnd + 4 OnStart). Unchanged in `1.3.2` / `agent-framework 1.7.0`; `1.3.0` closed the bulk of OnStart inheritance, OnEnd self-promotion still not implemented for root invoke_agent. |
+| MAF .NET | `Microsoft.OpenTelemetry 1.0.4` + `Microsoft.Agents.AI 1.7.0` | ✅ works — all `chat` 11/11, `execute_tool` 8/8, `http` 13/13, nested `invoke_agent` spans inherit `main_agent.{name,id}` when source is present (38/38 = 100%) | ✅ works — root `MainWeatherAgent` and `VerifierAgent` `invoke_agent` spans self-promote `gen_ai.agent.name → microsoft.gen_ai.main_agent.name` (6/6 = 100%) | ⚠ partial — `name` + `id` 44/44 (100%); `version` 0/all (no `gen_ai.agent.version` source — SDK has no version arg); `conversation_id` 6/19 on http-class spans (no per-run knob on `Workflow.RunStreaming`) | ✅ **Fully compliant — ZERO propagation failures.** Every missing `main_agent.X` correlates with the source `gen_ai.agent.X` (or `gen_ai.conversation.id`) never being emitted by the SDK in the first place. Unchanged from `1.0.3 → 1.0.4` (parity confirmed by side-by-side span-name diff). |
+| LangChain Python | `microsoft-opentelemetry 1.3.2` + `langchain 1.3.4` / `langgraph 1.2.4` | ✅ works — all `chat` 10/10, `execute_tool` 8/8, `http` 7/7 inherit `main_agent.{name,id,version,conversation_id}` from the parent's `gen_ai.agent.*` (25/25 = 100%). 31/40 outer LangGraph wrapper spans also inherit; the 9 misses are wrapper spans that are PARENTS of invoke_agent (no agent ancestor above them) — source-absent, not a bug | ❌ only 3/9 named root `invoke_agent` spans self-promote (33%) even though `gen_ai.agent.{name,id,version}` and `gen_ai.conversation.id` are all 9/9 present on these spans — **6 confirmed OnEnd propagation failures**. Additionally, **3 nested `WeatherDataAgent` `invoke_agent` spans (one per protocol — `completions`, `foundry-completions`, `foundry-responses`) have `gen_ai.agent.name` leaked from the parent Main agent's name** (their `agent.id` UUID and `agent.description` are still the data agent's correct values, only `name` regresses — LC/LG instrumentor traversal bug) | ✅ — with the average-user `agent_version="1.0.0"` instrumentation arg + per-invoke `thread_id`, all 4 spec attributes now flow on `v3cv-lcpy-135936`: `name` 71/74, `id` 71/74, `version` 71/74, `conversation_id` 91/91 (where source ancestor exists) | **Partial — 6 OnEnd misses + 3 nested-name leaks.** `1.3.2`'s bundled instrumentor surfaces names + ids + descriptions, so OnStart inheritance hits 100% for `chat`/`tool`/`http`. The OnEnd self-promotion is still flaky on named invoke_agent roots — same root-cause shape as MAF Python's OnEnd gap. |
+| LangChain NodeJs | `@microsoft/opentelemetry 1.1.0` | ✅ works — all `chat` 15/15, `execute_tool` 9/9 inherit `main_agent.name` and `main_agent.conversation_id` from parent invoke_agent. `id` + `version` 0/all because the JS instrumentor never emits the source attributes — source-absent, not a propagation bug | ✅ works — root `invoke_agent` spans self-promote `gen_ai.agent.name → microsoft.gen_ai.main_agent.name` (verified on prior `wk2s-lcnode-130123` baseline — 11/11) | ⚠ partial — `name` 100% (where source exists; outer wrappers get `"LangGraph"` on `foundry`/`responses` protocols — see source-bug note below); `id` + `version` 0/all (instrumentor reads only `run.name`, never `agent_id` / `agent_version` from any source); `conversation_id` 100% with the average-user metadata knob | ✅ **Fully compliant — ZERO propagation failures.** Source bug in the JS instrumentor: on `foundry`/`responses` protocols `gen_ai.agent.name` reads the outer LangGraph node `run.name` (`"LangGraph"`) instead of the inner `create_agent({name})` value. Named agents appear correctly on the `completions` protocol. |
 
 ### Evidence (sample span breakdown — MAF .NET, `responses` protocol, `v2-mafnet-112454`)
 
@@ -310,7 +474,7 @@ MAF Python's per-span behavior on `1.3.0` is the same shape as before (children 
 - ✅ With **MAF Python (`microsoft-opentelemetry 1.3.2`, `agent-framework 1.7.0`)**, customers can filter or aggregate **~90% of `chat` / `execute_tool` / HTTP / nested `invoke_agent`** spans by `microsoft.gen_ai.main_agent.name` (essentially unchanged from `1.3.0` / `agent-framework 1.6.0`; the small dip on `wk2s-mafpy-130123` is from one chat + one execute_tool span the OnStart processor didn't tag in this run; the child-inheritance gap closed in `1.3.0` is still closed).
 - ❌ With **MAF Python**, the two **root `invoke_agent`** spans per workflow run (Main + Verifier) are still NOT included in such a filter — the OnEnd self-promotion gap is still present in `microsoft-opentelemetry 1.3.2` and was not changed by the `agent-framework 1.6.0 → 1.7.0` bump. Workarounds: filter on `gen_ai.agent.name` for those rows, or wait for an OnEnd fix in the Python distro.
 - ✅ With **LangChain Python (`microsoft-opentelemetry 1.3.2`, `langchain 1.3.4`, `langgraph 1.2.4`)**, customers can filter or aggregate **~83% of spans** in a multi-agent trace by `microsoft.gen_ai.main_agent.name` — same coverage as the earlier `langchain 1.2.16` / `langgraph 1.1.10` baseline (`75/90` on `wk2s-lcpy-130123`, identical proportion to `75/90` on the prior `v132-lcpy-123027` run, confirming no regression from the major-version bumps). `1.3.2`'s bundled instrumentor surfaces the names set in `create_agent(name=...)` and reads `agent_id` / `agent_description` from per-invoke `RunnableConfig.metadata`, so both OnStart inheritance and OnEnd self-promotion work for the 3 named agents per protocol. The remaining ~17% gap is the LangGraph workflow infrastructure spans (outer wrapper + intermediate `main`/`verify`/`tools`/`model` chain spans) which have no `gen_ai.agent.*` source attribute.
-- ⚠ With **LangChain Python**, the nested `WeatherDataAgent-foundry-responses` `invoke_agent` span has a regressed `gen_ai.agent.name` (gets the parent **MainWeatherAgent**'s name even though its `agent.id` and `agent.description` are correctly the data agent's). This is a LangChain/LangGraph instrumentor bug — `create_agent(name=...)` value is not surfacing into the nested invocation when launched from the `@tool` wrapper on the `foundry-responses` protocol path. Other protocols don't even emit a nested Data invoke_agent span (matrix's known per-protocol asymmetry).
+- ⚠ With **LangChain Python**, **3 nested `WeatherDataAgent` `invoke_agent` spans (one per protocol — `completions`, `foundry-completions`, `foundry-responses`)** have a regressed `gen_ai.agent.name` (gets the parent **MainWeatherAgent**'s name even though their `agent.id` and `agent.description` are correctly the data agent's). This is a LangChain/LangGraph instrumentor traversal bug — `create_agent(name=...)` value is correctly placed in `RunnableConfig.metadata` (which is why `agent.id`/`description` arrive intact) but the instrumentor's `name` extractor walks one frame too far up the LC callback-manager stack and grabs the parent agent's name from the still-active outer config. See KQL Bug 4 above for a query that confirms the pattern on all 3 protocols.
 - ✅ With **LangChain NodeJs** (`@microsoft/opentelemetry 1.1.0`), customers can filter or aggregate **100% of spans** in a multi-agent trace by `microsoft.gen_ai.main_agent.name` on `wk2s-lcnode-130123` (35/35 — full coverage across `chat` 15/15, `execute_tool` 9/9, `invoke_agent` 11/11). Improved from the `28/29` (~96%) seen on the prior `distro11c-lcnode-152908` baseline. `id`, `version`, and `conversation_id` remain unattributed because the upstream `gen_ai.agent.*` source attributes are not emitted by the LangChain JS instrumentor for these fields.
 
 ### What an average user can do to close the source-attribute gaps
