@@ -234,7 +234,7 @@ async def main() -> int:
         azure_monitor_connection_string=connection_string,
     )
 
-    enable_instrumentation()
+    enable_instrumentation(enable_sensitive_data=True)
 
     test_processor = TestAgentSpanProcessor(SERVICE_NAME, run_id)
     trace.get_tracer_provider().add_span_processor(test_processor)
