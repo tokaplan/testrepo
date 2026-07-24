@@ -42,7 +42,6 @@ from agent_framework import (
     tool,
 )
 from agent_framework.foundry import FoundryChatClient
-from agent_framework.observability import enable_instrumentation
 from agent_framework_openai import OpenAIChatClient, OpenAIChatCompletionClient
 
 # ---------------------------------------------------------------------------
@@ -232,9 +231,8 @@ async def main() -> int:
     use_microsoft_opentelemetry(
         enable_azure_monitor=True,
         azure_monitor_connection_string=connection_string,
+        enable_sensitive_data=True,
     )
-
-    enable_instrumentation(enable_sensitive_data=True)
 
     test_processor = TestAgentSpanProcessor(SERVICE_NAME, run_id)
     trace.get_tracer_provider().add_span_processor(test_processor)
